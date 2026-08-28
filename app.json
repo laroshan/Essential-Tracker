@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "EssentialTracker",
+    "slug": "essential-tracker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "com.essentialtracker.app",
+      "permissions": [
+        "android.permission.READ_SMS",
+        "android.permission.RECEIVE_SMS"
+      ]
+    },
+    "ios": {
+      "bundleIdentifier": "com.essentialtracker.app"
+    }
+  }
+}
