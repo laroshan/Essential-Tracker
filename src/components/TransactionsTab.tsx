@@ -132,7 +132,7 @@ function AddTransactionModal({
               value={desc} onChangeText={setDesc} />
 
             <Text style={s.fieldLabel}>CATEGORY</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} nestedScrollEnabled={true}>
               <View style={{ flexDirection: 'row', gap: 8, paddingVertical: 4 }}>
                 {FORM_CATEGORIES.map(cat => (
                   <TouchableOpacity key={cat}
@@ -266,7 +266,7 @@ function EditTransactionModal({
               value={desc} onChangeText={setDesc} />
 
             <Text style={s.fieldLabel}>CATEGORY</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} nestedScrollEnabled={true}>
               <View style={{ flexDirection: 'row', gap: 8, paddingVertical: 4 }}>
                 {FORM_CATEGORIES.map(cat => (
                   <TouchableOpacity key={cat}
@@ -571,7 +571,7 @@ export default function TransactionsTab({ transactions, onDeleteTransaction, onA
             </View>
 
             {/* Category filter */}
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} nestedScrollEnabled={true}>
               <View style={{ flexDirection: 'row', gap: 6, paddingVertical: 4 }}>
                 {CATEGORIES.map(cat => (
                   <TouchableOpacity key={cat}

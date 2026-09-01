@@ -353,6 +353,7 @@ export default function AgentChatTab({
           <ScrollView 
             horizontal 
             showsHorizontalScrollIndicator={false} 
+            nestedScrollEnabled={true}
             style={styles.reviewScroll}
             contentContainerStyle={styles.reviewScrollContent}
           >
@@ -391,12 +392,7 @@ export default function AgentChatTab({
 
                 {/* Category selector */}
                 <Text style={styles.reviewInputLabel}>Category:</Text>
-                <ScrollView 
-                  horizontal 
-                  showsHorizontalScrollIndicator={false} 
-                  style={styles.inlineCategoryScroll}
-                  contentContainerStyle={styles.inlineCategoryContent}
-                >
+                <View style={styles.inlineCategoryWrapper}>
                   {CATEGORIES.map(cat => (
                     <TouchableOpacity
                       key={cat}
@@ -414,7 +410,7 @@ export default function AgentChatTab({
                       </Text>
                     </TouchableOpacity>
                   ))}
-                </ScrollView>
+                </View>
 
                 <View style={styles.reviewItemActions}>
                   <TouchableOpacity 
@@ -918,7 +914,7 @@ const styles = StyleSheet.create({
     borderColor: '#44403c',
     borderRadius: 12,
     padding: 12,
-    width: 250,
+    width: 290,
   },
   reviewItemHeader: {
     flexDirection: 'row',
@@ -934,7 +930,7 @@ const styles = StyleSheet.create({
   reviewItemSender: {
     color: '#78716c',
     fontSize: 9,
-    maxWidth: 120,
+    maxWidth: 140,
   },
   reviewItemDesc: {
     color: '#ffffff',
@@ -967,12 +963,12 @@ const styles = StyleSheet.create({
     width: 80,
     marginLeft: 6,
   },
-  inlineCategoryScroll: {
+  inlineCategoryWrapper: {
     flexDirection: 'row',
-    marginBottom: 12,
-  },
-  inlineCategoryContent: {
+    flexWrap: 'wrap',
     gap: 6,
+    marginBottom: 12,
+    marginTop: 2,
   },
   inlineCatPill: {
     backgroundColor: '#1c1917',
