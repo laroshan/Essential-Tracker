@@ -1,15 +1,33 @@
+import type { PaymentMethod, TxnKind } from './utils/sms/types';
+
+export type { PaymentMethod, TxnKind };
+
 export interface Transaction {
   id: string;
   amount: number;
   type: 'credit' | 'debit';
   description: string;
   category: string;
-  paymentMethod: 'Cash' | 'Credit Card' | 'Debit Card';
+  paymentMethod: PaymentMethod;
   date: number; // timestamp — transaction time (from SMS body if available, else SMS delivery time)
   smsSender?: string;
   smsBody?: string;   // raw SMS body for re-parsing / debugging
   smsDate?: number;  // OS delivery timestamp
   approved?: boolean; // indicates if the transaction has been reviewed and approved
+
+  // ── Enrichment from the SMS engine (all optional for manual / legacy entries) ──
+  kind?: TxnKind;
+  merchant?: string;
+  bank?: string;
+  account?: string;             // masked, e.g. "*072"
+  counterpartyAccount?: string; // masked other side of a transfer
+  toOwnAccount?: boolean;
+  reference?: string;
+  balance?: number;             // available balance reported in the alert
+  currency?: string;
+  confidence?: number;          // 0..1
+  transferGroupId?: string;     // links both legs of a self-transfer
+  userCategorized?: boolean;    // category set by the user — never auto-overwritten
 }
 
 export interface Message {
@@ -21,7 +39,7 @@ export interface Message {
     amount: number;
     type: 'credit' | 'debit';
     description: string;
-    paymentMethod: 'Cash' | 'Credit Card' | 'Debit Card';
+    paymentMethod: PaymentMethod;
   };
 }
 

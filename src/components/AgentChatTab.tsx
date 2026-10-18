@@ -12,17 +12,9 @@ import {
   Switch
 } from 'react-native';
 import { Message, Transaction } from '../types';
-import { parseSMS } from '../utils/smsParser';
 import SmsModule from '../../modules/sms-module/src/SmsModule';
 import { storage } from '../utils/storage';
-const CATEGORIES = ['Food & Drinks', 'Shopping', 'Transport', 'Subscriptions', 'Utilities',
-  'Health', 'Education', 'Investment', 'Savings', 'Rent', 'Cash Withdrawal', 'Income', 'Others'];
-const CATEGORY_EMOJI: Record<string, string> = {
-  'Food & Drinks': '🍔', 'Shopping': '🛍️', 'Transport': '🚗',
-  'Subscriptions': '🎬', 'Utilities': '🔌', 'Health': '🏥',
-  'Education': '📚', 'Investment': '📈', 'Savings': '🏦',
-  'Rent': '🏠', 'Cash Withdrawal': '💵', 'Income': '💰', 'Others': '📦',
-};
+import { CATEGORIES, CATEGORY_EMOJI } from '../constants/categories';
 interface AgentChatTabProps {
   messages: Message[];
   transactions: Transaction[];
@@ -39,6 +31,7 @@ interface AgentChatTabProps {
   autoLog: boolean;
   onToggleAutoLog: (value: boolean) => void;
   onResetSyncDates: () => void;
+  onReanalyzeSms: () => void;
   syncWindowDays: number;
   onUpdateSyncWindowDays: (days: number) => void;
   unapprovedTransactions: Transaction[];
@@ -63,6 +56,7 @@ export default function AgentChatTab({
   autoLog,
   onToggleAutoLog,
   onResetSyncDates,
+  onReanalyzeSms,
   syncWindowDays,
   onUpdateSyncWindowDays,
   unapprovedTransactions,
@@ -207,7 +201,7 @@ export default function AgentChatTab({
       } else if (lowerText.includes('rich') || lowerText.includes('invest')) {
         responseText = "To live a rich life financially, focus on automatic investing. Invest 10-20% of your paycheck into index funds every single month. Compound interest will do the rest!";
       } else if (lowerText.includes('sms') || lowerText.includes('bank')) {
-        responseText = "Tap the 'Sync Bank SMS Alerts' button at the top to let me automatically scan your text messages for debit/credit alerts from Chase, HDFC, PayPal, and more.";
+        responseText = "Tap the 'Sync Bank SMS Alerts' button at the top to let me automatically scan your text messages for debit/credit alerts from BOC, People's Bank, Sampath and other Sri Lankan banks.";
       }
 
       setTimeout(() => {
@@ -304,6 +298,18 @@ export default function AgentChatTab({
               </View>
               <TouchableOpacity style={styles.btnResetSync} onPress={onResetSyncDates}>
                 <Text style={styles.btnResetSyncText}>Reset</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.separator} />
+
+            <View style={styles.configRow}>
+              <View style={styles.configInfo}>
+                <Text style={styles.configLabel}>Re-analyze SMS Transactions</Text>
+                <Text style={styles.configDescription}>Re-parse logged alerts with the latest engine: fixes amounts & categories, removes OTPs/duplicates, links own-account transfers</Text>
+              </View>
+              <TouchableOpacity style={styles.btnResetSync} onPress={onReanalyzeSms}>
+                <Text style={styles.btnResetSyncText}>Run</Text>
               </TouchableOpacity>
             </View>
 

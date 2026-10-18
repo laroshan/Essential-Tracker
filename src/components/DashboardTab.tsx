@@ -1,6 +1,8 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { Transaction, WealthConfig } from '../types';
+import { CATEGORY_EMOJI } from '../constants/categories';
+import { spendByCategory, totals } from '../utils/finance';
 
 interface DashboardTabProps {
   transactions: Transaction[];
@@ -20,13 +22,7 @@ export default function DashboardTab({ transactions, config, onNavigateToTab }: 
     return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
   });
 
-  const totalIncome = thisMonthTxns
-    .filter(t => t.type === 'credit')
-    .reduce((sum, t) => sum + t.amount, 0);
-
-  const totalExpenses = thisMonthTxns
-    .filter(t => t.type === 'debit')
-    .reduce((sum, t) => sum + t.amount, 0);
+  const { income: totalIncome, expenses: totalExpenses } = totals(thisMonthTxns);
 
   // Categorize for Rich Life Budget allocation
   // Fixed Costs: Utilities, Rent, Bills, Transport
@@ -34,7 +30,7 @@ export default function DashboardTab({ transactions, config, onNavigateToTab }: 
   // Savings: Savings category
   // Guilt-Free: Food & Drinks, Shopping, Entertainment, Others
   const fixedCosts = thisMonthTxns
-    .filter(t => t.type === 'debit' && ['Utilities', 'Transport', 'Rent', 'Bills'].includes(t.category))
+    .filter(t => t.type === 'debit' && ['Utilities', 'Transport', 'Rent', 'Bills', 'Loan & EMI', 'Groceries', 'Health', 'Bank Charges'].includes(t.category))
     .reduce((sum, t) => sum + t.amount, 0);
 
   const investments = thisMonthTxns
@@ -46,7 +42,7 @@ export default function DashboardTab({ transactions, config, onNavigateToTab }: 
     .reduce((sum, t) => sum + t.amount, 0);
 
   const guiltFree = thisMonthTxns
-    .filter(t => t.type === 'debit' && ['Food & Drinks', 'Shopping', 'Entertainment', 'Others'].includes(t.category))
+    .filter(t => t.type === 'debit' && ['Food & Drinks', 'Shopping', 'Entertainment', 'Travel', 'Subscriptions', 'Others'].includes(t.category))
     .reduce((sum, t) => sum + t.amount, 0);
 
   const monthlyIncome = config.monthlyIncome || totalIncome || 1; // avoid divide by zero
@@ -67,9 +63,7 @@ export default function DashboardTab({ transactions, config, onNavigateToTab }: 
     const d = new Date(t.date);
     return d.getMonth() === prevMonth && d.getFullYear() === prevYear;
   });
-  const prevMonthExpenses = prevMonthTxns
-    .filter(t => t.type === 'debit')
-    .reduce((sum, t) => sum + t.amount, 0);
+  const prevMonthExpenses = totals(prevMonthTxns).expenses;
 
   // Month-over-month expense change
   const momChange = prevMonthExpenses > 0
@@ -85,18 +79,10 @@ export default function DashboardTab({ transactions, config, onNavigateToTab }: 
   const momColor = momChange === null ? '#71717a' : momChange <= 0 ? '#10b981' : '#f43f5e';
 
   // Top spending category this month
-  const catMap: Record<string, number> = {};
-  thisMonthTxns.filter(t => t.type === 'debit').forEach(t => {
-    catMap[t.category] = (catMap[t.category] ?? 0) + t.amount;
-  });
+  const catMap = spendByCategory(thisMonthTxns);
   const topCategory = Object.entries(catMap).sort((a, b) => b[1] - a[1])[0];
 
-  const categoryEmojis: Record<string, string> = {
-    'Food & Drinks': '🍔', 'Shopping': '🛍️', 'Transport': '🚗',
-    'Subscriptions': '🎬', 'Utilities': '🔌', 'Health': '🏥',
-    'Education': '📚', 'Investment': '📈', 'Savings': '🏦',
-    'Rent': '🏠', 'Cash Withdrawal': '💵', 'Income': '💰', 'Others': '📦',
-  };
+  const categoryEmojis = CATEGORY_EMOJI;
 
   // Recommendations and warnings
   const alerts: string[] = [];

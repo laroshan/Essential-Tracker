@@ -11,7 +11,9 @@ import {
   Alert,
   Dimensions,
 } from 'react-native';
-import { Transaction } from '../types';
+import { PaymentMethod, Transaction } from '../types';
+import { CATEGORIES as ALL_CATEGORIES, CATEGORY_EMOJI } from '../constants/categories';
+import { isExpense, isIncome, isRefund } from '../utils/finance';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -24,17 +26,10 @@ interface TransactionsTabProps {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const CATEGORIES = ['All', 'Food & Drinks', 'Shopping', 'Transport', 'Subscriptions', 'Utilities',
-  'Health', 'Education', 'Investment', 'Savings', 'Rent', 'Cash Withdrawal', 'Income', 'Others'];
-const FORM_CATEGORIES = CATEGORIES.filter(c => c !== 'All');
-const FORM_METHODS = ['Cash', 'Credit Card', 'Debit Card'] as const;
+const CATEGORIES: string[] = ['All', ...ALL_CATEGORIES];
+const FORM_CATEGORIES: string[] = [...ALL_CATEGORIES];
+const FORM_METHODS: PaymentMethod[] = ['Cash', 'Credit Card', 'Debit Card', 'Bank Transfer'];
 
-const CATEGORY_EMOJI: Record<string, string> = {
-  'Food & Drinks': '🍔', 'Shopping': '🛍️', 'Transport': '🚗',
-  'Subscriptions': '🎬', 'Utilities': '🔌', 'Health': '🏥',
-  'Education': '📚', 'Investment': '📈', 'Savings': '🏦',
-  'Rent': '🏠', 'Cash Withdrawal': '💵', 'Income': '💰', 'Others': '📦',
-};
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -79,7 +74,7 @@ function AddTransactionModal({
   const [type, setType] = useState<'debit' | 'credit'>('debit');
   const [desc, setDesc] = useState('');
   const [category, setCategory] = useState('Others');
-  const [method, setMethod] = useState<'Cash' | 'Credit Card' | 'Debit Card'>('Cash');
+  const [method, setMethod] = useState<PaymentMethod>('Cash');
   const [dateStr, setDateStr] = useState(defaultDate);
 
   const reset = () => {
@@ -199,7 +194,7 @@ function EditTransactionModal({
   const [type, setType] = useState<'debit' | 'credit'>('debit');
   const [desc, setDesc] = useState('');
   const [category, setCategory] = useState('Others');
-  const [method, setMethod] = useState<'Cash' | 'Credit Card' | 'Debit Card'>('Cash');
+  const [method, setMethod] = useState<PaymentMethod>('Cash');
   const [dateStr, setDateStr] = useState('');
 
   // Update local states when transaction changes or modal opens
@@ -394,8 +389,9 @@ function MonthlyView({ transactions }: { transactions: Transaction[] }) {
           income: 0, expenses: 0, categories: {},
         };
       }
-      if (t.type === 'credit') map[key].income += t.amount;
-      else {
+      if (isIncome(t)) map[key].income += t.amount;
+      else if (isRefund(t)) map[key].expenses -= t.amount;
+      else if (isExpense(t)) {
         map[key].expenses += t.amount;
         map[key].categories[t.category] = (map[key].categories[t.category] ?? 0) + t.amount;
       }

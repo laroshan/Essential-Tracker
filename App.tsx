@@ -19,7 +19,8 @@ import {
   Task, TodoItem, TodoList, MoodEntry, JournalEntry
 } from './src/types';
 import { storage } from './src/utils/storage';
-import { parseSMS } from './src/utils/smsParser';
+import { ingestSms, learnKey, reanalyzeTransactions, reconcileTransactions, recategorize } from './src/utils/sms';
+import { totals } from './src/utils/finance';
 import SmsModule from './modules/sms-module/src/SmsModule';
 
 // Import existing Money Tracker Tabs
@@ -256,38 +257,46 @@ function AppContent() {
     await storage.setObject('transactions', updated);
   };
 
-  const addTransactions = async (txns: Omit<Transaction, 'id'>[]) => {
-    if (txns.length === 0) return;
-    const now = Date.now();
-    const newTxns: Transaction[] = txns.map((txn, index) => ({
-      ...txn,
-      id: `txn-${now}-${index}-${Math.random().toString(36).substring(2, 9)}`
-    }));
-    const updated = [...newTxns, ...transactionsRef.current];
-    setTransactions(updated);
-    await storage.setObject('transactions', updated);
+  const saveTransactions = async (list: Transaction[]) => {
+    transactionsRef.current = list;
+    setTransactions(list);
+    await storage.setObject('transactions', list);
   };
 
-  const learnCategoryPattern = async (description: string, newCategory: string) => {
-    const key = description.toUpperCase().trim();
-    if (!key) return;
+  /** Dedupe + pair self-transfers across the whole history, then persist. */
+  const reconcileAndSave = async (list: Transaction[]) => {
+    const { txns } = reconcileTransactions(list);
+    await saveTransactions(txns);
+  };
+
+  const learnCategoryPattern = async (txn: Transaction, newCategory: string): Promise<Record<string, string>> => {
+    const key = learnKey(txn);
+    if (!key) return learnedCategoriesRef.current;
     const updated = { ...learnedCategoriesRef.current, [key]: newCategory };
+    learnedCategoriesRef.current = updated;
     setLearnedCategories(updated);
     await storage.setObject('learnedCategories', updated);
+    return updated;
   };
 
   const editTransaction = async (id: string, updates: Partial<Transaction>) => {
     const originalTxn = transactionsRef.current.find(t => t.id === id);
     if (!originalTxn) return;
-    
-    // Check if category changed to record pattern learning
-    if (updates.category && updates.category !== originalTxn.category && originalTxn.description) {
-      await learnCategoryPattern(originalTxn.description, updates.category);
-    }
-    
-    const updated = transactionsRef.current.map(t => t.id === id ? { ...t, ...updates } : t);
-    setTransactions(updated);
-    await storage.setObject('transactions', updated);
+
+    const categoryChanged = !!updates.category && updates.category !== originalTxn.category;
+    let learned = learnedCategoriesRef.current;
+    if (categoryChanged) learned = await learnCategoryPattern(originalTxn, updates.category as string);
+    const key = categoryChanged ? learnKey(originalTxn) : '';
+
+    const updated = transactionsRef.current.map(t => {
+      if (t.id === id) return { ...t, ...updates, ...(categoryChanged ? { userCategorized: true } : {}) };
+      // Apply what was just learned to every other auto-categorised transaction from the same merchant
+      if (key && !t.userCategorized && t.category !== 'Transfer' && learnKey(t) === key) {
+        return { ...t, category: recategorize(t, learned) };
+      }
+      return t;
+    });
+    await saveTransactions(updated);
   };
 
   const approveTransaction = async (id: string) => {
@@ -380,20 +389,40 @@ function AppContent() {
     );
   };
 
+  /** Re-run the current SMS engine over every stored SMS transaction. */
+  const reanalyzeSmsTransactions = async () => {
+    const result = reanalyzeTransactions(transactionsRef.current, learnedCategoriesRef.current);
+    const apply = async () => {
+      await saveTransactions(result.transactions);
+      await addMessage({
+        sender: 'agent',
+        text: `🔍 **Re-analysis complete**\nRe-parsed ${result.updated} SMS transactions, removed ${result.removed.length} non-transactions/duplicates (OTPs, failed transfers, repeated alerts) and matched ${result.transfersPaired} transfers between your own accounts. Your manual category choices were kept.`,
+      });
+    };
+    if (result.removed.length === 0) { await apply(); return; }
+    const sample = result.removed.slice(0, 4).map(t => `• Rs. ${t.amount.toFixed(2)} — ${t.description}`).join('\n');
+    Alert.alert(
+      'Re-analyze SMS transactions',
+      `${result.updated} transactions will be corrected and ${result.removed.length} removed because they were OTPs, failed transfers or duplicate alerts:\n\n${sample}${result.removed.length > 4 ? '\n…' : ''}`,
+      [{ text: 'Cancel', style: 'cancel' }, { text: 'Apply', onPress: apply }],
+    );
+  };
+
   const logSmsTransaction = async (smsItem: any, index: number) => {
-    const { parsed, address, body, date } = smsItem;
-    const txnDate = parsed.transactionDate ?? date;
-    await addTransaction({
-      amount: parsed.amount,
-      type: parsed.type,
-      description: parsed.description,
-      category: parsed.category,
-      paymentMethod: parsed.paymentMethod,
-      date: txnDate,
-      smsSender: address,
-      smsBody: body,
-      smsDate: date
-    });
+    const { address, body, date } = smsItem;
+    // Re-run the engine so items queued by an older version get the full enrichment
+    const fresh = ingestSms([{ address, body, date }], learnedCategoriesRef.current).candidates[0]?.txn;
+    const parsed: any = fresh ?? smsItem.parsed;
+    const newTxn: Transaction = {
+      ...(fresh ?? {
+        amount: parsed.amount, type: parsed.type, description: parsed.description, category: parsed.category,
+        paymentMethod: parsed.paymentMethod, date: parsed.transactionDate ?? date,
+        smsSender: address, smsBody: body, smsDate: date,
+      }),
+      id: `txn-${Date.now()}`,
+      approved: true,
+    };
+    await reconcileAndSave([newTxn, ...transactionsRef.current]);
     await addMessage({
       sender: 'agent',
       text: `✅ Added bank alert: ${parsed.type === 'debit' ? 'spent' : 'received'} Rs. ${parsed.amount.toFixed(2)} — ${parsed.description} (${parsed.category}).`
@@ -514,59 +543,52 @@ function AppContent() {
       let newPendingAdded = false;
       const detected = [...currentPending];
       const autoLoggedList: Array<{ amount: number; description: string; date: number }> = [];
-      const txnsToBatchAdd: Omit<Transaction, 'id'>[] = [];
- 
-      inboxList.forEach((sms: { address: string; body: string; date: number }) => {
-        // Resolve to configured sender key for consistent checkpoint lookups
-        const senderKey = resolveToSenderKey(sms.address);
-        if (!senderKey) return; // Not a configured bank sender (shouldn't happen with native filtering, but safe)
- 
-        // Skip if message date is older than the checkpoint (strict < so same-timestamp messages are NOT skipped)
-        const senderCheckpoint = currentLastSyncedDates[senderKey] ?? bootstrapDate;
-        if (sms.date < senderCheckpoint) {
-          return;
-        }
- 
-        const parsed = parseSMS(sms.body, sms.address);
-        if (!parsed) {
-          return;
-        }
 
-        // Check for learned category overrides
-        const descKey = parsed.description.toUpperCase().trim();
-        const customCategory = learnedCategoriesRef.current[descKey];
-        if (customCategory) {
-          parsed.category = customCategory;
-        }
- 
-        const isAlreadyLogged = currentTransactions.some(t => {
-          const sameSmsDate = t.smsDate === sms.date;
-          const sameAmountAndTime = Math.abs(t.amount - parsed.amount) < 0.01 && Math.abs(t.date - sms.date) < 60000;
-          return sameSmsDate || sameAmountAndTime;
-        });
+      // Analyse the whole batch together: OTPs enrich merchant-less card debits,
+      // duplicate alerts collapse, and self-transfers pair across banks.
+      const fromBanks = inboxList.filter(sms => resolveToSenderKey(sms.address));
+      const ingest = ingestSms(fromBanks, learnedCategoriesRef.current);
+      console.log('SMS engine stats:', ingest.stats);
+      if (ingest.unparsed.length > 0) {
+        console.log('Unrecognised financial SMS:', ingest.unparsed.map(s => `${s.address}: ${s.body.slice(0, 80)}`));
+      }
+
+      const fresh = ingest.candidates.filter(({ sms, txn }) => {
+        const senderKey = resolveToSenderKey(sms.address) as string;
+        // Strict < so same-timestamp messages are NOT skipped
+        if (sms.date < (currentLastSyncedDates[senderKey] ?? bootstrapDate)) return false;
+        const isAlreadyLogged = currentTransactions.some(t =>
+          (t.smsDate === sms.date && t.smsBody === sms.body)
+          || (!!txn.reference && t.reference === txn.reference && Math.abs(t.amount - txn.amount) < 0.01));
         const isDismissed = currentDismissed.includes(sms.date);
         const isAlreadyPending = currentPending.some(p => p.date === sms.date);
-        if (!isAlreadyLogged && !isDismissed && !isAlreadyPending) {
-          const smsItem = { address: sms.address, body: sms.body, date: sms.date, parsed };
-          if (currentAutoLog) {
-            const txnDate = parsed.transactionDate ?? sms.date;
-            txnsToBatchAdd.push({
-              amount: parsed.amount, type: parsed.type, description: parsed.description,
-              category: parsed.category, paymentMethod: parsed.paymentMethod,
-              date: txnDate, smsSender: sms.address, smsBody: sms.body, smsDate: sms.date,
-              approved: false
-            });
-            autoLoggedList.push({ amount: parsed.amount, description: parsed.description, date: txnDate });
-          } else {
-            detected.push(smsItem);
-            newPendingAdded = true;
-          }
-        }
+        return !isAlreadyLogged && !isDismissed && !isAlreadyPending;
       });
- 
-      // Save all auto-logged transactions in a single batch
-      if (currentAutoLog && txnsToBatchAdd.length > 0) {
-        await addTransactions(txnsToBatchAdd);
+
+      if (fresh.length > 0) {
+        const stamp = Date.now();
+        const newTxns: Transaction[] = fresh.map(({ txn }, i) => ({
+          ...txn,
+          id: `txn-${stamp}-${i}-${Math.random().toString(36).substring(2, 9)}`,
+          approved: false,
+        }));
+        // Reconcile against history so a new credit can pair with an already-logged debit
+        const { txns: merged } = reconcileTransactions([...newTxns, ...currentTransactions]);
+
+        if (currentAutoLog) {
+          await saveTransactions(merged);
+          const kept = new Set(merged.map(t => t.id));
+          newTxns.filter(t => kept.has(t.id)).forEach(t =>
+            autoLoggedList.push({ amount: t.amount, description: t.description, date: t.date }));
+        } else {
+          const byId = new Map(merged.map(t => [t.id, t]));
+          fresh.forEach(({ sms }, i) => {
+            const reconciled = byId.get(newTxns[i].id);
+            if (!reconciled) return; // duplicate of something already logged
+            detected.push({ address: sms.address, body: sms.body, date: sms.date, parsed: reconciled });
+            newPendingAdded = true;
+          });
+        }
       }
  
       // Update sender checkpoints with the latest date retrieved in this query
@@ -747,9 +769,7 @@ function AppContent() {
     const d = new Date(t.date);
     return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   });
-  const thisMonthSpent = thisMonthTxns
-    .filter(t => t.type === 'debit')
-    .reduce((s, t) => s + t.amount, 0);
+  const thisMonthSpent = totals(thisMonthTxns).expenses;
 
   const latestMood = [...moodEntries].sort((a, b) => b.date - a.date)[0];
 
@@ -886,6 +906,7 @@ function AppContent() {
             autoLog={autoLog}
             onToggleAutoLog={toggleAutoLog}
             onResetSyncDates={resetSyncDates}
+            onReanalyzeSms={reanalyzeSmsTransactions}
             syncWindowDays={syncWindowDays}
             onUpdateSyncWindowDays={updateSyncWindowDays}
             unapprovedTransactions={unapprovedTransactions}

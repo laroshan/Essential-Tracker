@@ -8,6 +8,9 @@ import {
   Dimensions,
 } from 'react-native';
 import { Transaction } from '../types';
+import { CATEGORY_EMOJI } from '../constants/categories';
+import { isExpense, spendByCategory, totals } from '../utils/finance';
+import { detectRecurring } from '../utils/sms';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -18,12 +21,6 @@ interface AnalyticsTabProps {
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-const CATEGORY_EMOJI: Record<string, string> = {
-  'Food & Drinks': '🍔', 'Shopping': '🛍️', 'Transport': '🚗',
-  'Subscriptions': '🎬', 'Utilities': '🔌', 'Health': '🏥',
-  'Education': '📚', 'Investment': '📈', 'Savings': '🏦',
-  'Rent': '🏠', 'Cash Withdrawal': '💵', 'Income': '💰', 'Others': '📦',
-};
 
 function formatAmount(amount: number, decimals = 0): string {
   return amount.toLocaleString(undefined, {
@@ -72,8 +69,7 @@ export default function AnalyticsTab({ transactions }: AnalyticsTabProps) {
         const d = new Date(t.date);
         return d.getFullYear() === year && d.getMonth() === month;
       });
-      const income = txns.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0);
-      const expenses = txns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0);
+      const { income, expenses } = totals(txns);
       return {
         label: `${MONTH_NAMES[month]} ${year}`,
         income,
@@ -101,21 +97,18 @@ export default function AnalyticsTab({ transactions }: AnalyticsTabProps) {
     return transactions.filter(t => t.date >= limitDate);
   }, [range, transactions, now]);
 
-  const periodExpenses = useMemo(() => period.filter(t => t.type === 'debit'), [period]);
-  const periodIncome = useMemo(() => period.filter(t => t.type === 'credit'), [period]);
-  const totalSpent = useMemo(() => periodExpenses.reduce((s, t) => s + t.amount, 0), [periodExpenses]);
-  const totalIncome = useMemo(() => periodIncome.reduce((s, t) => s + t.amount, 0), [periodIncome]);
+  const periodExpenses = useMemo(() => period.filter(isExpense), [period]);
+  const periodTotals = useMemo(() => totals(period), [period]);
+  const totalSpent = periodTotals.expenses;
+  const totalIncome = periodTotals.income;
+  const recurring = useMemo(() => detectRecurring(transactions), [transactions]);
 
   // Category breakdown (expenses only)
   const catList = useMemo(() => {
-    const catMap: Record<string, number> = {};
-    periodExpenses.forEach(t => {
-      catMap[t.category] = (catMap[t.category] ?? 0) + t.amount;
-    });
-    return Object.entries(catMap)
+    return Object.entries(spendByCategory(period))
       .sort((a, b) => b[1] - a[1])
       .slice(0, 8);
-  }, [periodExpenses]);
+  }, [period]);
 
   const maxCat = useMemo(() => catList[0]?.[1] ?? 1, [catList]);
 
@@ -298,6 +291,35 @@ export default function AnalyticsTab({ transactions }: AnalyticsTabProps) {
             ))}
           </View>
         </>
+      )}
+
+      {/* Recurring payments detected across all SMS history */}
+      {recurring.length > 0 && (
+        <>
+          <Text style={s.sectionHeading}>Recurring Payments</Text>
+          <View style={s.tableCard}>
+            <View style={[s.tableHeaderRow, { paddingHorizontal: 12, paddingVertical: 8 }]}>
+              <Text style={[s.tableHeaderCell, { flex: 2 }]}>Payee</Text>
+              <Text style={[s.tableHeaderCell, { flex: 1 }]}>Next</Text>
+              <Text style={[s.tableHeaderCell, { flex: 1, textAlign: 'right' }]}>Avg</Text>
+            </View>
+            {recurring.map((r, i) => (
+              <View key={r.key} style={[s.tableDataRow, i < recurring.length - 1 && s.tableRowBorder]}>
+                <Text style={[s.tableDataCell, { flex: 2, color: '#e4e4e7', fontWeight: '600' }]} numberOfLines={1}>
+                  {CATEGORY_EMOJI[r.category] ?? '📦'} {r.label} · {r.cadence}
+                </Text>
+                <Text style={[s.tableDataCell, { flex: 1, color: '#71717a' }]}>{formatDateShort(r.nextExpected)}</Text>
+                <Text style={[s.tableDataCell, { flex: 1, textAlign: 'right' }, s.textDebit]}>Rs.{formatAmount(r.averageAmount)}</Text>
+              </View>
+            ))}
+          </View>
+        </>
+      )}
+
+      {periodTotals.transfers > 0 && (
+        <Text style={[s.emptyText, { marginTop: 16 }]}>
+          Rs.{formatAmount(periodTotals.transfers)} moved between your own accounts is excluded from income and spending.
+        </Text>
       )}
     </ScrollView>
   );
