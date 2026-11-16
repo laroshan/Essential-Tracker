@@ -38,3 +38,32 @@ export function spendByCategory(txns: Transaction[]): Record<string, number> {
   for (const t of txns) if (isExpense(t)) map[t.category] = (map[t.category] ?? 0) + t.amount;
   return map;
 }
+
+/**
+ * Average monthly spend over the last `months` *complete* calendar months that have any expense.
+ * Returns null when there is no history yet, so callers can fall back to an estimate.
+ */
+export function averageMonthlyExpenses(txns: Transaction[], months = 3, now = new Date()): number | null {
+  const buckets: number[] = [];
+  for (let i = 1; i <= months; i++) {
+    const start = new Date(now.getFullYear(), now.getMonth() - i, 1).getTime();
+    const end = new Date(now.getFullYear(), now.getMonth() - i + 1, 1).getTime();
+    const spent = totals(txns.filter(t => t.date >= start && t.date < end)).expenses;
+    if (spent > 0) buckets.push(spent);
+  }
+  if (buckets.length === 0) return null;
+  return buckets.reduce((s, v) => s + v, 0) / buckets.length;
+}
+
+/**
+ * Months to clear a balance paying a fixed amount each month at `annualRatePct` interest.
+ * Returns Infinity when the payment doesn't cover the monthly interest.
+ */
+export function debtPayoffMonths(balance: number, annualRatePct: number, monthlyPayment: number): number {
+  if (balance <= 0) return 0;
+  if (monthlyPayment <= 0) return Infinity;
+  const r = annualRatePct / 100 / 12;
+  if (r === 0) return Math.ceil(balance / monthlyPayment);
+  if (monthlyPayment <= balance * r) return Infinity;
+  return Math.ceil(-Math.log(1 - (r * balance) / monthlyPayment) / Math.log(1 + r));
+}

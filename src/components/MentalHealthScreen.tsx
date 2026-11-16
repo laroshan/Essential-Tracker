@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -10,17 +10,16 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Dimensions,
 } from 'react-native';
 import { MoodEntry, MoodScore, JournalEntry } from '../types';
-
-const { width } = Dimensions.get('window');
+import { activityMoodInsights, averageMood, moodStreak } from '../utils/trackers';
 
 interface MentalHealthScreenProps {
   moodEntries: MoodEntry[];
   journalEntries: JournalEntry[];
   onAddMood: (entry: Omit<MoodEntry, 'id'>) => void;
   onAddJournal: (entry: Omit<JournalEntry, 'id' | 'createdAt'>) => void;
+  onUpdateJournal: (id: string, updates: Partial<JournalEntry>) => void;
   onDeleteMood: (id: string) => void;
   onDeleteJournal: (id: string) => void;
   onGoHome: () => void;
@@ -63,23 +62,27 @@ function MoodLogModal({
     );
   };
 
-  const handleAdd = () => {
-    onAdd({ mood, note: note.trim(), activities, date: Date.now() });
+  const close = () => {
     setMood(3);
     setNote('');
     setActivities([]);
     onClose();
   };
 
+  const handleAdd = () => {
+    onAdd({ mood, note: note.trim(), activities, date: Date.now() });
+    close();
+  };
+
   const cfg = MOOD_CONFIG[mood];
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={close}>
       <KeyboardAvoidingView
         style={styles.modalOverlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <ScrollView style={styles.modalSheet} contentContainerStyle={styles.modalSheetContent}>
+        <ScrollView style={styles.modalSheet} contentContainerStyle={styles.modalSheetContent} keyboardShouldPersistTaps="handled">
           <View style={styles.modalHandle} />
           <Text style={styles.modalTitle}>How are you feeling?</Text>
 
@@ -146,7 +149,7 @@ function MoodLogModal({
           />
 
           <View style={styles.modalActions}>
-            <TouchableOpacity style={styles.btnCancel} onPress={onClose}>
+            <TouchableOpacity style={styles.btnCancel} onPress={close}>
               <Text style={styles.btnCancelText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -164,26 +167,35 @@ function MoodLogModal({
 
 function JournalModal({
   visible,
+  entry,
   onClose,
-  onAdd,
+  onSave,
+  onDelete,
 }: {
   visible: boolean;
+  /** When set, the modal opens this entry for reading / editing. */
+  entry: JournalEntry | null;
   onClose: () => void;
-  onAdd: (entry: Omit<JournalEntry, 'id' | 'createdAt'>) => void;
+  onSave: (entry: Omit<JournalEntry, 'id' | 'createdAt'>) => void;
+  onDelete: (id: string) => void;
 }) {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [mood, setMood] = useState<MoodScore>(3);
 
-  const handleAdd = () => {
+  useEffect(() => {
+    if (!visible) return;
+    setTitle(entry?.title ?? '');
+    setContent(entry?.content ?? '');
+    setMood(entry?.mood ?? 3);
+  }, [visible, entry]);
+
+  const handleSave = () => {
     if (!title.trim() && !content.trim()) {
       Alert.alert('Empty Entry', 'Please write something.');
       return;
     }
-    onAdd({ title: title.trim(), content: content.trim(), mood });
-    setTitle('');
-    setContent('');
-    setMood(3);
+    onSave({ title: title.trim(), content: content.trim(), mood });
     onClose();
   };
 
@@ -193,9 +205,14 @@ function JournalModal({
         style={styles.modalOverlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={[styles.modalSheet, { paddingBottom: 36 }]}>
+        <ScrollView style={styles.modalSheet} contentContainerStyle={styles.modalSheetContent} keyboardShouldPersistTaps="handled">
           <View style={styles.modalHandle} />
-          <Text style={styles.modalTitle}>New Journal Entry</Text>
+          <Text style={styles.modalTitle}>{entry ? 'Journal Entry' : 'New Journal Entry'}</Text>
+          {entry && (
+            <Text style={styles.journalDate}>
+              {new Date(entry.createdAt).toLocaleString('en', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+            </Text>
+          )}
 
           <Text style={styles.sectionLabel}>How are you feeling?</Text>
           <View style={styles.moodMiniRow}>
@@ -233,17 +250,23 @@ function JournalModal({
           />
 
           <View style={styles.modalActions}>
-            <TouchableOpacity style={styles.btnCancel} onPress={onClose}>
-              <Text style={styles.btnCancelText}>Cancel</Text>
-            </TouchableOpacity>
+            {entry ? (
+              <TouchableOpacity style={styles.btnCancel} onPress={() => onDelete(entry.id)}>
+                <Text style={[styles.btnCancelText, styles.colorDanger]}>Delete</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={styles.btnCancel} onPress={onClose}>
+                <Text style={styles.btnCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={[styles.btnAdd, { backgroundColor: '#a855f7' }]}
-              onPress={handleAdd}
+              onPress={handleSave}
             >
-              <Text style={styles.btnAddText}>Save Entry</Text>
+              <Text style={styles.btnAddText}>{entry ? 'Save Changes' : 'Save Entry'}</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -299,6 +322,7 @@ export default function MentalHealthScreen({
   journalEntries,
   onAddMood,
   onAddJournal,
+  onUpdateJournal,
   onDeleteMood,
   onDeleteJournal,
   onGoHome,
@@ -306,33 +330,45 @@ export default function MentalHealthScreen({
   const [activeTab, setActiveTab] = useState<TabKey>('log');
   const [showMoodModal, setShowMoodModal] = useState(false);
   const [showJournalModal, setShowJournalModal] = useState(false);
+  const [openJournal, setOpenJournal] = useState<JournalEntry | null>(null);
 
-  // Streak calculation
-  const streak = (() => {
-    let count = 0;
-    const d = new Date();
-    while (true) {
-      d.setHours(0, 0, 0, 0);
-      const hasEntry = moodEntries.some(e => {
-        const ed = new Date(e.date);
-        return ed.toDateString() === d.toDateString();
-      });
-      if (!hasEntry) break;
-      count++;
-      d.setDate(d.getDate() - 1);
-    }
-    return count;
-  })();
+  const sortedMoods = useMemo(() => [...moodEntries].sort((a, b) => b.date - a.date), [moodEntries]);
+  const streak = moodStreak(moodEntries);
+  const latestMood = sortedMoods[0];
+  const loggedToday = !!latestMood && new Date(latestMood.date).toDateString() === new Date().toDateString();
 
-  // Latest mood
-  const latestMood = moodEntries.sort((a, b) => b.date - a.date)[0];
-
-  // Average mood this week
   const weekEntries = moodEntries.filter(e => Date.now() - e.date < 7 * 24 * 60 * 60 * 1000);
-  const avgMood =
-    weekEntries.length > 0
-      ? Math.round(weekEntries.reduce((s, e) => s + e.mood, 0) / weekEntries.length) as MoodScore
-      : null;
+  const avgMood = averageMood(weekEntries);
+  const monthEntries = useMemo(
+    () => moodEntries.filter(e => Date.now() - e.date < 30 * 24 * 60 * 60 * 1000),
+    [moodEntries],
+  );
+  const insights = useMemo(() => activityMoodInsights(monthEntries), [monthEntries]);
+  const avgMonth = monthEntries.length > 0 ? monthEntries.reduce((s, e) => s + e.mood, 0) / monthEntries.length : null;
+
+  const confirmDeleteMood = (id: string) => {
+    Alert.alert('Delete Mood Log', 'Remove this mood entry?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => onDeleteMood(id) },
+    ]);
+  };
+
+  const confirmDeleteJournal = (id: string) => {
+    Alert.alert('Delete Journal Entry', 'This entry will be permanently removed.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          onDeleteJournal(id);
+          setShowJournalModal(false);
+        },
+      },
+    ]);
+  };
+
+  const openNewJournal = () => { setOpenJournal(null); setShowJournalModal(true); };
+  const openExistingJournal = (entry: JournalEntry) => { setOpenJournal(entry); setShowJournalModal(true); };
 
   const TABS: { key: TabKey; label: string }[] = [
     { key: 'log',     label: '📊 Overview' },
@@ -410,10 +446,34 @@ export default function MentalHealthScreen({
           )}
 
           {/* Today's log check */}
-          {moodEntries.length > 0 && !moodEntries.some(e => new Date(e.date).toDateString() === new Date().toDateString()) && (
+          {moodEntries.length > 0 && !loggedToday && (
             <TouchableOpacity style={styles.todayPrompt} onPress={() => setShowMoodModal(true)}>
-              <Text style={styles.todayPromptText}>👋 Haven't logged today yet — tap to check in!</Text>
+              <Text style={styles.todayPromptText}>
+                👋 Haven't logged today yet — {streak > 0 ? `check in to keep your ${streak}-day streak!` : 'tap to check in!'}
+              </Text>
             </TouchableOpacity>
+          )}
+
+          {/* What lifts your mood */}
+          {insights.length > 0 && avgMonth !== null && (
+            <View style={styles.chartContainer}>
+              <Text style={styles.chartTitle}>What lifts your mood (30d)</Text>
+              {insights.slice(0, 5).map(i => {
+                const diff = i.avg - avgMonth;
+                const rounded = Math.min(5, Math.max(1, Math.round(i.avg))) as MoodScore;
+                return (
+                  <View key={i.activity} style={styles.insightRow}>
+                    <Text style={styles.insightActivity}>{i.activity}</Text>
+                    <Text style={styles.insightCount}>{i.count}×</Text>
+                    <Text style={styles.insightMood}>{MOOD_CONFIG[rounded].emoji} {i.avg.toFixed(1)}</Text>
+                    <Text style={[styles.insightDiff, { color: diff >= 0 ? '#10b981' : '#f43f5e' }]}>
+                      {diff >= 0 ? '+' : ''}{diff.toFixed(1)}
+                    </Text>
+                  </View>
+                );
+              })}
+              <Text style={styles.insightFoot}>Average mood on days with each activity vs your 30-day average ({avgMonth.toFixed(1)}).</Text>
+            </View>
           )}
         </ScrollView>
       )}
@@ -428,9 +488,7 @@ export default function MentalHealthScreen({
               <Text style={styles.emptySubtitle}>Start logging your mood to see history here</Text>
             </View>
           ) : (
-            [...moodEntries]
-              .sort((a, b) => b.date - a.date)
-              .map(entry => {
+            sortedMoods.map(entry => {
                 const mc = MOOD_CONFIG[entry.mood];
                 return (
                   <View key={entry.id} style={styles.historyCard}>
@@ -440,9 +498,9 @@ export default function MentalHealthScreen({
                         <Text style={styles.historyEmoji}>{mc.emoji}</Text>
                         <View style={{ flex: 1 }}>
                           <Text style={[styles.historyMood, { color: mc.color }]}>{mc.label}</Text>
-                          <Text style={styles.historyDate}>{new Date(entry.date).toLocaleDateString('en', { weekday: 'long', month: 'long', day: 'numeric' })}</Text>
+                          <Text style={styles.historyDate}>{new Date(entry.date).toLocaleString('en', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</Text>
                         </View>
-                        <TouchableOpacity onPress={() => onDeleteMood(entry.id)}>
+                        <TouchableOpacity onPress={() => confirmDeleteMood(entry.id)} hitSlop={8}>
                           <Text style={styles.deleteIcon}>✕</Text>
                         </TouchableOpacity>
                       </View>
@@ -467,7 +525,7 @@ export default function MentalHealthScreen({
       {/* Journal Tab */}
       {activeTab === 'journal' && (
         <ScrollView style={styles.content} contentContainerStyle={styles.contentPad} showsVerticalScrollIndicator={false}>
-          <TouchableOpacity style={styles.newJournalBtn} onPress={() => setShowJournalModal(true)}>
+          <TouchableOpacity style={styles.newJournalBtn} onPress={openNewJournal}>
             <Text style={styles.newJournalBtnText}>+ New Journal Entry</Text>
           </TouchableOpacity>
 
@@ -483,21 +541,21 @@ export default function MentalHealthScreen({
               .map(entry => {
                 const mc = MOOD_CONFIG[entry.mood];
                 return (
-                  <View key={entry.id} style={styles.journalCard}>
+                  <TouchableOpacity key={entry.id} style={styles.journalCard} onPress={() => openExistingJournal(entry)} activeOpacity={0.8}>
                     <View style={styles.journalCardHeader}>
                       <Text style={styles.journalEmoji}>{mc.emoji}</Text>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.journalTitle} numberOfLines={1}>{entry.title || 'Untitled'}</Text>
                         <Text style={styles.journalDate}>{new Date(entry.createdAt).toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' })}</Text>
                       </View>
-                      <TouchableOpacity onPress={() => onDeleteJournal(entry.id)}>
+                      <TouchableOpacity onPress={() => confirmDeleteJournal(entry.id)} hitSlop={8}>
                         <Text style={styles.deleteIcon}>✕</Text>
                       </TouchableOpacity>
                     </View>
                     {!!entry.content && (
                       <Text style={styles.journalContent} numberOfLines={3}>{entry.content}</Text>
                     )}
-                  </View>
+                  </TouchableOpacity>
                 );
               })
           )}
@@ -511,8 +569,10 @@ export default function MentalHealthScreen({
       />
       <JournalModal
         visible={showJournalModal}
+        entry={openJournal}
         onClose={() => setShowJournalModal(false)}
-        onAdd={onAddJournal}
+        onSave={draft => (openJournal ? onUpdateJournal(openJournal.id, draft) : onAddJournal(draft))}
+        onDelete={confirmDeleteJournal}
       />
     </View>
   );
@@ -677,6 +737,15 @@ const styles = StyleSheet.create({
   journalTitle: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
   journalDate: { color: '#52525b', fontSize: 11, marginTop: 2 },
   journalContent: { color: '#71717a', fontSize: 13, lineHeight: 19 },
+  colorDanger: { color: '#f43f5e' },
+
+  // Insights
+  insightRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, gap: 8 },
+  insightActivity: { flex: 1, color: '#e4e4e7', fontSize: 13, fontWeight: '600' },
+  insightCount: { color: '#52525b', fontSize: 11, width: 28, textAlign: 'right' },
+  insightMood: { color: '#a1a1aa', fontSize: 12, width: 52, textAlign: 'right' },
+  insightDiff: { fontSize: 12, fontWeight: '800', width: 36, textAlign: 'right' },
+  insightFoot: { color: '#52525b', fontSize: 10, marginTop: 8, lineHeight: 14 },
 
   // Empty
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingTop: 60 },

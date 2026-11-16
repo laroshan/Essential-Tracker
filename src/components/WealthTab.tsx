@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { 
   View, 
   Text, 
@@ -8,25 +8,56 @@ import {
   TextInput, 
   Alert 
 } from 'react-native';
-import { Debt, Subscription, WealthConfig } from '../types';
+import { Debt, Subscription, Transaction, WealthConfig } from '../types';
+import { averageMonthlyExpenses, debtPayoffMonths } from '../utils/finance';
 
 interface WealthTabProps {
   config: WealthConfig;
+  transactions: Transaction[];
   debts: Debt[];
   subscriptions: Subscription[];
   onUpdateConfig: (newConfig: Partial<WealthConfig>) => void;
   onAddDebt: (debt: Omit<Debt, 'id'>) => void;
+  onUpdateDebt: (id: string, updates: Partial<Debt>) => void;
   onDeleteDebt: (id: string) => void;
   onAddSubscription: (sub: Omit<Subscription, 'id'>) => void;
   onDeleteSubscription: (id: string) => void;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Roll a stored renewal date forward by whole cycles until it is today or later. */
+function upcomingRenewal(sub: Subscription, now = new Date()): Date {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const [y, m, dd] = sub.nextRenewal.split('-').map(Number);
+  const d = new Date(y, (m || 1) - 1, dd || 1);
+  if (isNaN(d.getTime())) return today;
+  while (d < today) {
+    if (sub.cycle === 'yearly') d.setFullYear(d.getFullYear() + 1);
+    else d.setMonth(d.getMonth() + 1);
+  }
+  return d;
+}
+
+function toIsoDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function formatMonths(months: number): string {
+  if (!isFinite(months)) return 'never at this payment';
+  if (months < 12) return `${months} month${months === 1 ? '' : 's'}`;
+  const y = Math.floor(months / 12), m = months % 12;
+  return `${y}y${m ? ` ${m}m` : ''}`;
+}
+
 export default function WealthTab({
   config,
+  transactions,
   debts,
   subscriptions,
   onUpdateConfig,
   onAddDebt,
+  onUpdateDebt,
   onDeleteDebt,
   onAddSubscription,
   onDeleteSubscription
@@ -43,13 +74,17 @@ export default function WealthTab({
   // Input states for adding new subscriptions
   const [newSubName, setNewSubName] = useState('');
   const [newSubCost, setNewSubCost] = useState('');
+  const [newSubCycle, setNewSubCycle] = useState<Subscription['cycle']>('monthly');
+  const [savedInput, setSavedInput] = useState('');
 
   // Compounder state sliders (simulated by simple button changes since React Native sliders require external libs)
   const [compoundMonthly, setCompoundMonthly] = useState(10000); // Rs. 10,000/month
   const [compoundRate, setCompoundRate] = useState(9); // 9% return
 
   // 1. Emergency Fund Calculations
-  const averageMonthlyExpense = config.monthlyIncome * 0.6; // assume 60% of income is spent
+  // Prefer real spending history; fall back to an estimate of 60% of income
+  const actualMonthlyExpense = useMemo(() => averageMonthlyExpenses(transactions), [transactions]);
+  const averageMonthlyExpense = actualMonthlyExpense ?? config.monthlyIncome * 0.6;
   const emergencyTarget = averageMonthlyExpense * config.emergencyFundTargetMonths;
   const emergencyPercent = Math.round((config.emergencyFundSaved / (emergencyTarget || 1)) * 100);
   const emergencyRemaining = Math.max(0, emergencyTarget - config.emergencyFundSaved);
@@ -72,8 +107,9 @@ export default function WealthTab({
     const monthlyRate = (compoundRate / 100) / 12;
     const months = years * 12;
     // FV = P * (((1 + r)^n - 1) / r)
+    if (monthlyRate === 0) return compoundMonthly * months;
     const fv = compoundMonthly * (((Math.pow(1 + monthlyRate, months) - 1) / monthlyRate));
-    return isNaN(fv) ? 0 : fv;
+    return isFinite(fv) ? fv : 0;
   };
 
   const handleAddDebt = () => {
@@ -81,13 +117,13 @@ export default function WealthTab({
     const rate = parseFloat(newDebtRate);
     const minPay = parseFloat(newDebtMinPay);
 
-    if (!newDebtName || isNaN(balance) || isNaN(rate) || isNaN(minPay)) {
+    if (!newDebtName.trim() || isNaN(balance) || isNaN(rate) || isNaN(minPay) || balance <= 0 || rate < 0 || minPay < 0) {
       Alert.alert('Invalid Input', 'Please enter valid values for all fields.');
       return;
     }
 
     onAddDebt({
-      name: newDebtName,
+      name: newDebtName.trim(),
       balance,
       interestRate: rate,
       minPayment: minPay
@@ -101,20 +137,45 @@ export default function WealthTab({
 
   const handleAddSubscription = () => {
     const cost = parseFloat(newSubCost);
-    if (!newSubName || isNaN(cost)) {
+    if (!newSubName.trim() || isNaN(cost) || cost <= 0) {
       Alert.alert('Invalid Input', 'Please enter valid name and cost.');
       return;
     }
 
+    const renewal = new Date();
+    if (newSubCycle === 'yearly') renewal.setFullYear(renewal.getFullYear() + 1);
+    else renewal.setMonth(renewal.getMonth() + 1);
+
     onAddSubscription({
-      name: newSubName,
+      name: newSubName.trim(),
       cost,
-      cycle: 'monthly',
-      nextRenewal: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+      cycle: newSubCycle,
+      nextRenewal: toIsoDate(renewal),
     });
 
     setNewSubName('');
     setNewSubCost('');
+  };
+
+  const commitSaved = () => {
+    const parsed = parseFloat(savedInput.replace(/,/g, ''));
+    if (!isNaN(parsed) && parsed >= 0) onUpdateConfig({ emergencyFundSaved: parsed });
+    setSavedInput('');
+  };
+
+  const logDebtPayment = (debt: Debt) => {
+    const amount = Math.min(debt.minPayment, debt.balance);
+    Alert.alert('Log Payment', `Record a payment of Rs. ${amount.toLocaleString()} towards ${debt.name}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Record', onPress: () => onUpdateDebt(debt.id, { balance: Math.max(0, +(debt.balance - amount).toFixed(2)) }) },
+    ]);
+  };
+
+  const confirmDelete = (label: string, onConfirm: () => void) => {
+    Alert.alert('Remove', `Remove ${label}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: onConfirm },
+    ]);
   };
 
   return (
@@ -164,9 +225,14 @@ export default function WealthTab({
               </View>
               <View style={styles.statBox}>
                 <Text style={styles.statLabel}>TARGET GOAL</Text>
-                <Text style={styles.statVal}>Rs. {emergencyTarget.toLocaleString()}</Text>
+                <Text style={styles.statVal}>Rs. {Math.round(emergencyTarget).toLocaleString()}</Text>
               </View>
             </View>
+            <Text style={styles.debtRates}>
+              {actualMonthlyExpense !== null
+                ? `Based on your average spend of Rs. ${Math.round(actualMonthlyExpense).toLocaleString()}/month over recent months.`
+                : `Estimated at 60% of your Rs. ${config.monthlyIncome.toLocaleString()} income — log transactions for a real figure.`}
+            </Text>
 
             {/* Circular/Linear Progress Meter */}
             <View style={styles.progressContainer}>
@@ -178,7 +244,7 @@ export default function WealthTab({
 
             <Text style={styles.remainingText}>
               {emergencyRemaining > 0 
-                ? `You need Rs. ${emergencyRemaining.toLocaleString()} more to secure your target of ${config.emergencyFundTargetMonths} months of expenses.` 
+                ? `You need Rs. ${Math.round(emergencyRemaining).toLocaleString()} more to secure your target of ${config.emergencyFundTargetMonths} months of expenses.` 
                 : '🎉 Congratulations! Your Emergency Fund is fully funded. You have absolute peace of mind!'}
             </Text>
 
@@ -202,14 +268,13 @@ export default function WealthTab({
                 <TextInput
                   style={styles.numericInput}
                   keyboardType="numeric"
-                  placeholder={`Current saved: Rs. ${config.emergencyFundSaved}`}
+                  placeholder={`Current saved: Rs. ${config.emergencyFundSaved.toLocaleString()}`}
                   placeholderTextColor="#71717a"
-                  onChangeText={(val) => {
-                    const parsed = parseFloat(val);
-                    if (!isNaN(parsed)) {
-                      onUpdateConfig({ emergencyFundSaved: parsed });
-                    }
-                  }}
+                  value={savedInput}
+                  onChangeText={setSavedInput}
+                  onSubmitEditing={commitSaved}
+                  onEndEditing={commitSaved}
+                  returnKeyType="done"
                 />
               </View>
             </View>
@@ -241,13 +306,21 @@ export default function WealthTab({
                 <Text style={styles.listHeader}>Your Active Debts</Text>
                 {debts.map(d => (
                   <View key={d.id} style={styles.debtItem}>
-                    <View>
+                    <View style={styles.flexShrink}>
                       <Text style={styles.debtName}>{d.name}</Text>
-                      <Text style={styles.debtRates}>Interest: {d.interestRate}% | Min Pay: Rs. {d.minPayment}</Text>
+                      <Text style={styles.debtRates}>Interest: {d.interestRate}% | Min Pay: Rs. {d.minPayment.toLocaleString()}</Text>
+                      <Text style={styles.debtRates}>
+                        {d.balance <= 0 ? '✅ Paid off' : `Paid off in ${formatMonths(debtPayoffMonths(d.balance, d.interestRate, d.minPayment))}`}
+                      </Text>
                     </View>
                     <View style={styles.rightDebt}>
                       <Text style={styles.debtBalance}>Rs. {d.balance.toLocaleString()}</Text>
-                      <TouchableOpacity onPress={() => onDeleteDebt(d.id)} style={styles.btnDelDebt}>
+                      {d.balance > 0 && d.minPayment > 0 && (
+                        <TouchableOpacity onPress={() => logDebtPayment(d)} style={styles.btnDelDebt}>
+                          <Text style={styles.btnPayText}>Pay</Text>
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity onPress={() => confirmDelete(d.name, () => onDeleteDebt(d.id))} style={styles.btnDelDebt}>
                         <Text style={styles.btnDelDebtText}>✖</Text>
                       </TouchableOpacity>
                     </View>
@@ -402,20 +475,28 @@ export default function WealthTab({
             {/* List */}
             {subscriptions.length > 0 ? (
               <View style={styles.debtList}>
-                {subscriptions.map(s => (
+                {[...subscriptions]
+                  .map(s => ({ s, renewal: upcomingRenewal(s) }))
+                  .sort((a, b) => a.renewal.getTime() - b.renewal.getTime())
+                  .map(({ s, renewal }) => {
+                  const daysLeft = Math.round((renewal.getTime() - new Date(new Date().toDateString()).getTime()) / DAY_MS);
+                  return (
                   <View key={s.id} style={styles.debtItem}>
-                    <View>
+                    <View style={styles.flexShrink}>
                       <Text style={styles.debtName}>{s.name}</Text>
-                      <Text style={styles.debtRates}>Renews on {s.nextRenewal}</Text>
+                      <Text style={[styles.debtRates, daysLeft <= 3 && styles.colorDanger]}>
+                        Renews {daysLeft === 0 ? 'today' : daysLeft === 1 ? 'tomorrow' : `in ${daysLeft} days`} ({renewal.toLocaleDateString()})
+                      </Text>
                     </View>
                     <View style={styles.rightDebt}>
-                      <Text style={styles.debtBalance}>Rs. {s.cost.toFixed(2)}/mo</Text>
-                      <TouchableOpacity onPress={() => onDeleteSubscription(s.id)} style={styles.btnDelDebt}>
+                      <Text style={styles.debtBalance}>Rs. {s.cost.toFixed(2)}/{s.cycle === 'yearly' ? 'yr' : 'mo'}</Text>
+                      <TouchableOpacity onPress={() => confirmDelete(s.name, () => onDeleteSubscription(s.id))} style={styles.btnDelDebt}>
                         <Text style={styles.btnDelDebtText}>✖</Text>
                       </TouchableOpacity>
                     </View>
                   </View>
-                ))}
+                  );
+                })}
               </View>
             ) : (
               <View style={styles.emptyBox}>
@@ -436,12 +517,25 @@ export default function WealthTab({
                 />
                 <TextInput
                   style={[styles.formInput, { width: '38%' }]}
-                  placeholder="Cost (Rs./mo)"
+                  placeholder={newSubCycle === 'yearly' ? 'Cost (Rs./yr)' : 'Cost (Rs./mo)'}
                   placeholderTextColor="#71717a"
                   keyboardType="numeric"
                   value={newSubCost}
                   onChangeText={setNewSubCost}
                 />
+              </View>
+              <View style={styles.btnRow}>
+                {(['monthly', 'yearly'] as const).map(c => (
+                  <TouchableOpacity
+                    key={c}
+                    style={[styles.ctrlBtn, newSubCycle === c && styles.ctrlBtnActive]}
+                    onPress={() => setNewSubCycle(c)}
+                  >
+                    <Text style={[styles.ctrlBtnText, newSubCycle === c && styles.ctrlBtnTextActive]}>
+                      {c === 'monthly' ? 'Monthly' : 'Yearly'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
               </View>
               <TouchableOpacity style={styles.btnSubmit} onPress={handleAddSubscription}>
                 <Text style={styles.btnSubmitText}>Add Subscription</Text>
@@ -455,6 +549,8 @@ export default function WealthTab({
 }
 
 const styles = StyleSheet.create({
+  flexShrink: { flexShrink: 1, paddingRight: 8 },
+  btnPayText: { color: '#10b981', fontSize: 12, fontWeight: '800' },
   container: {
     flex: 1,
     backgroundColor: '#09090b',

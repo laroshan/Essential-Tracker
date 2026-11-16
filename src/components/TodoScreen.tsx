@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -19,8 +19,11 @@ interface TodoScreenProps {
   todoLists: TodoList[];
   onAddItem: (item: Omit<TodoItem, 'id' | 'createdAt' | 'completedAt'>) => void;
   onToggleItem: (id: string) => void;
+  onEditItem: (id: string, text: string) => void;
   onDeleteItem: (id: string) => void;
-  onAddList: (list: Omit<TodoList, 'id' | 'createdAt'>) => void;
+  onClearCompleted: (listId: string) => void;
+  /** Returns the id of the created list. */
+  onAddList: (list: Omit<TodoList, 'id' | 'createdAt'>) => string;
   onDeleteList: (id: string) => void;
   onGoHome: () => void;
 }
@@ -30,37 +33,42 @@ const LIST_COLORS = [
   '#f43f5e', '#06b6d4', '#84cc16', '#ec4899',
 ];
 
-const DEFAULT_LISTS: Omit<TodoList, 'id' | 'createdAt'>[] = [
-  { name: 'Personal', color: '#10b981' },
-  { name: 'Work',     color: '#3b82f6' },
-  { name: 'Shopping', color: '#f59e0b' },
-];
-
 function AddListModal({
   visible,
+  existingNames,
   onClose,
   onAdd,
 }: {
   visible: boolean;
+  existingNames: string[];
   onClose: () => void;
   onAdd: (list: Omit<TodoList, 'id' | 'createdAt'>) => void;
 }) {
   const [name, setName] = useState('');
   const [color, setColor] = useState(LIST_COLORS[0]);
 
-  const handleAdd = () => {
-    if (!name.trim()) {
-      Alert.alert('Missing Name', 'Please enter a list name.');
-      return;
-    }
-    onAdd({ name: name.trim(), color });
+  const close = () => {
     setName('');
     setColor(LIST_COLORS[0]);
     onClose();
   };
 
+  const handleAdd = () => {
+    const clean = name.trim();
+    if (!clean) {
+      Alert.alert('Missing Name', 'Please enter a list name.');
+      return;
+    }
+    if (existingNames.some(n => n.toLowerCase() === clean.toLowerCase())) {
+      Alert.alert('Duplicate List', `You already have a list called "${clean}".`);
+      return;
+    }
+    onAdd({ name: clean, color });
+    close();
+  };
+
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={close}>
       <KeyboardAvoidingView
         style={styles.modalOverlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -76,6 +84,7 @@ function AddListModal({
             placeholderTextColor="#52525b"
             value={name}
             onChangeText={setName}
+            onSubmitEditing={handleAdd}
             autoFocus
           />
 
@@ -91,7 +100,7 @@ function AddListModal({
           </View>
 
           <View style={styles.modalActions}>
-            <TouchableOpacity style={styles.btnCancel} onPress={onClose}>
+            <TouchableOpacity style={styles.btnCancel} onPress={close}>
               <Text style={styles.btnCancelText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[styles.btnAdd, { backgroundColor: color }]} onPress={handleAdd}>
@@ -108,14 +117,18 @@ function TodoItemRow({
   item,
   accentColor,
   onToggle,
+  onEdit,
   onDelete,
 }: {
   item: TodoItem;
   accentColor: string;
   onToggle: () => void;
+  onEdit: (text: string) => void;
   onDelete: () => void;
 }) {
   const fadeAnim = useRef(new Animated.Value(1)).current;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(item.text);
 
   const handleDelete = () => {
     Animated.timing(fadeAnim, {
@@ -125,25 +138,51 @@ function TodoItemRow({
     }).start(() => onDelete());
   };
 
+  const startEdit = () => {
+    setDraft(item.text);
+    setEditing(true);
+  };
+
+  const commitEdit = () => {
+    const clean = draft.trim();
+    if (clean && clean !== item.text) onEdit(clean);
+    setEditing(false);
+  };
+
   return (
     <Animated.View style={[styles.itemRow, { opacity: fadeAnim }]}>
       <TouchableOpacity
         style={[styles.checkCircle, item.completed && { backgroundColor: accentColor, borderColor: accentColor }]}
         onPress={onToggle}
+        hitSlop={8}
       >
         {item.completed && <Text style={styles.checkIcon}>✓</Text>}
       </TouchableOpacity>
 
-      <TouchableOpacity style={styles.itemTextContainer} onPress={onToggle} activeOpacity={0.7}>
-        <Text style={[styles.itemText, item.completed && styles.itemTextDone]}>
-          {item.text}
-        </Text>
-        <Text style={styles.itemDate}>
-          {new Date(item.createdAt).toLocaleDateString()}
-        </Text>
-      </TouchableOpacity>
+      {editing ? (
+        <TextInput
+          style={[styles.itemText, styles.itemEditInput, { borderColor: accentColor }]}
+          value={draft}
+          onChangeText={setDraft}
+          onSubmitEditing={commitEdit}
+          onBlur={commitEdit}
+          returnKeyType="done"
+          autoFocus
+        />
+      ) : (
+        <TouchableOpacity style={styles.itemTextContainer} onPress={onToggle} onLongPress={startEdit} activeOpacity={0.7}>
+          <Text style={[styles.itemText, item.completed && styles.itemTextDone]}>
+            {item.text}
+          </Text>
+          <Text style={styles.itemDate}>
+            {item.completed && item.completedAt
+              ? `Done ${new Date(item.completedAt).toLocaleDateString()}`
+              : new Date(item.createdAt).toLocaleDateString()}
+          </Text>
+        </TouchableOpacity>
+      )}
 
-      <TouchableOpacity style={styles.deleteItemBtn} onPress={handleDelete}>
+      <TouchableOpacity style={styles.deleteItemBtn} onPress={handleDelete} hitSlop={8}>
         <Text style={styles.deleteItemIcon}>✕</Text>
       </TouchableOpacity>
     </Animated.View>
@@ -155,7 +194,9 @@ export default function TodoScreen({
   todoLists,
   onAddItem,
   onToggleItem,
+  onEditItem,
   onDeleteItem,
+  onClearCompleted,
   onAddList,
   onDeleteList,
   onGoHome,
@@ -165,21 +206,26 @@ export default function TodoScreen({
   const [showAddList, setShowAddList] = useState(false);
   const [showCompleted, setShowCompleted] = useState(true);
 
-  const activeList = todoLists.find(l => l.id === selectedListId);
-  const listItems = todoItems.filter(i => i.listId === selectedListId);
+  // Fall back to the first list if the selected one no longer exists (deleted, or lists loaded late)
+  const activeList = todoLists.find(l => l.id === selectedListId) ?? todoLists[0];
+  useEffect(() => {
+    if (activeList && activeList.id !== selectedListId) setSelectedListId(activeList.id);
+  }, [activeList, selectedListId]);
+  const activeListId = activeList?.id ?? '';
+  const listItems = todoItems.filter(i => i.listId === activeListId);
   const pendingItems = listItems.filter(i => !i.completed);
   const completedItems = listItems.filter(i => i.completed);
 
   const handleQuickAdd = () => {
     if (!quickInput.trim()) return;
-    if (!selectedListId) {
+    if (!activeListId) {
       Alert.alert('No List', 'Create or select a list first.');
       return;
     }
     onAddItem({
       text: quickInput.trim(),
       completed: false,
-      listId: selectedListId,
+      listId: activeListId,
     });
     setQuickInput('');
   };
@@ -203,6 +249,15 @@ export default function TodoScreen({
         },
       ],
     );
+  };
+
+  const handleClearCompleted = () => {
+    if (!activeList) return;
+    const n = completedItems.length;
+    Alert.alert('Clear Completed', `Remove ${n} completed item${n === 1 ? '' : 's'} from "${activeList.name}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Clear', style: 'destructive', onPress: () => onClearCompleted(activeList.id) },
+    ]);
   };
 
   const progressPercent =
@@ -236,7 +291,7 @@ export default function TodoScreen({
       >
         {todoLists.map(list => {
           const count = todoItems.filter(i => i.listId === list.id && !i.completed).length;
-          const isActive = selectedListId === list.id;
+          const isActive = activeListId === list.id;
           return (
             <TouchableOpacity
               key={list.id}
@@ -289,7 +344,7 @@ export default function TodoScreen({
           onChangeText={setQuickInput}
           onSubmitEditing={handleQuickAdd}
           returnKeyType="done"
-          editable={!!selectedListId}
+          editable={!!activeListId}
         />
         <TouchableOpacity
           style={[styles.quickAddBtn, { backgroundColor: activeList?.color ?? '#f59e0b' }]}
@@ -320,6 +375,7 @@ export default function TodoScreen({
                 item={item}
                 accentColor={activeList?.color ?? '#f59e0b'}
                 onToggle={() => onToggleItem(item.id)}
+                onEdit={text => onEditItem(item.id, text)}
                 onDelete={() => onDeleteItem(item.id)}
               />
             ))}
@@ -327,14 +383,16 @@ export default function TodoScreen({
             {/* Completed section */}
             {completedItems.length > 0 && (
               <>
-                <TouchableOpacity
-                  style={styles.completedHeader}
-                  onPress={() => setShowCompleted(v => !v)}
-                >
-                  <Text style={styles.completedHeaderText}>
-                    {showCompleted ? '▾' : '▸'} Completed ({completedItems.length})
-                  </Text>
-                </TouchableOpacity>
+                <View style={styles.completedHeader}>
+                  <TouchableOpacity onPress={() => setShowCompleted(v => !v)}>
+                    <Text style={styles.completedHeaderText}>
+                      {showCompleted ? '▾' : '▸'} Completed ({completedItems.length})
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={handleClearCompleted} hitSlop={8}>
+                    <Text style={styles.clearCompletedText}>Clear</Text>
+                  </TouchableOpacity>
+                </View>
                 {showCompleted &&
                   completedItems.map(item => (
                     <TodoItemRow
@@ -342,6 +400,7 @@ export default function TodoScreen({
                       item={item}
                       accentColor={activeList?.color ?? '#f59e0b'}
                       onToggle={() => onToggleItem(item.id)}
+                      onEdit={text => onEditItem(item.id, text)}
                       onDelete={() => onDeleteItem(item.id)}
                     />
                   ))}
@@ -355,17 +414,19 @@ export default function TodoScreen({
                 <Text style={styles.emptySubtitle}>Add your first item above</Text>
               </View>
             )}
+
+            <Text style={styles.hintText}>
+              Long-press an item to edit it{todoLists.length > 1 ? ' · long-press a list to delete it' : ''}
+            </Text>
           </>
         )}
       </ScrollView>
 
       <AddListModal
         visible={showAddList}
+        existingNames={todoLists.map(l => l.name)}
         onClose={() => setShowAddList(false)}
-        onAdd={list => {
-          onAddList(list);
-          // We'll select the new list after it's added via side effect in parent
-        }}
+        onAdd={list => setSelectedListId(onAddList(list))}
       />
     </View>
   );
@@ -501,6 +562,14 @@ const styles = StyleSheet.create({
   },
   checkIcon: { color: '#ffffff', fontSize: 13, fontWeight: '800' },
   itemTextContainer: { flex: 1 },
+  itemEditInput: {
+    flex: 1,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderRadius: 8,
+    backgroundColor: '#111114',
+  },
   itemText: { color: '#e4e4e7', fontSize: 15, fontWeight: '500' },
   itemTextDone: { textDecorationLine: 'line-through', color: '#3f3f46' },
   itemDate: { color: '#3f3f46', fontSize: 11, marginTop: 2 },
@@ -508,8 +577,15 @@ const styles = StyleSheet.create({
   deleteItemIcon: { color: '#3f3f46', fontSize: 14, fontWeight: '700' },
 
   // Completed section
-  completedHeader: { paddingVertical: 12 },
+  completedHeader: {
+    paddingVertical: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   completedHeaderText: { color: '#52525b', fontSize: 12, fontWeight: '700' },
+  clearCompletedText: { color: '#f43f5e', fontSize: 12, fontWeight: '700' },
+  hintText: { color: '#3f3f46', fontSize: 11, textAlign: 'center', marginTop: 24 },
 
   // Empty
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingTop: 60 },

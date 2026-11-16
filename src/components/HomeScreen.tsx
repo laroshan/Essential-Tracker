@@ -89,7 +89,7 @@ function TrackerTile({ emoji, title, subtitle, stats, accentColor, delay, onPres
 interface HomeScreenProps {
   onNavigate: (screen: TrackerScreen) => void;
   moneyStats: { transactions: number; thisMonthSpent: number };
-  taskStats: { total: number; done: number };
+  taskStats: { total: number; done: number; overdue: number };
   todoStats: { total: number; completed: number };
   moodStats: { streak: number; lastMood: number | null };
 }
@@ -118,7 +118,7 @@ export default function HomeScreen({
       emoji: '💰',
       title: 'Money Tracker',
       subtitle: 'Transactions & Wealth',
-      stats: `Rs. ${moneyStats.thisMonthSpent.toLocaleString()} spent`,
+      stats: `Rs. ${moneyStats.thisMonthSpent.toLocaleString(undefined, { maximumFractionDigits: 0 })} spent`,
       accentColor: '#10b981',
       delay: 100,
       onPress: () => onNavigate('money'),
@@ -130,7 +130,9 @@ export default function HomeScreen({
       stats:
         taskStats.total === 0
           ? 'No tasks yet'
-          : `${taskStats.done}/${taskStats.total} done`,
+          : taskStats.overdue > 0
+            ? `${taskStats.done}/${taskStats.total} done · ${taskStats.overdue} overdue`
+            : `${taskStats.done}/${taskStats.total} done`,
       accentColor: '#3b82f6',
       delay: 200,
       onPress: () => onNavigate('tasks'),

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   Platform,
 } from 'react-native';
 import { Task, TaskPriority, TaskStatus } from '../types';
+import { dueLabel, endOfDayIn, isOverdue, sortTasks, startOfDay } from '../utils/trackers';
 
 interface TaskTrackerScreenProps {
   tasks: Task[];
@@ -44,43 +45,61 @@ const STATUS_TABS: { key: TaskStatus | 'all'; label: string }[] = [
 const CATEGORIES = ['Work', 'Personal', 'Health', 'Finance', 'Learning', 'Other'];
 const PRIORITIES: TaskPriority[] = ['low', 'medium', 'high', 'urgent'];
 
-interface AddTaskModalProps {
+const DUE_PRESETS: { label: string; days: number | null }[] = [
+  { label: 'None',     days: null },
+  { label: 'Today',    days: 0 },
+  { label: 'Tomorrow', days: 1 },
+  { label: '3 days',   days: 3 },
+  { label: '1 week',   days: 7 },
+  { label: '2 weeks',  days: 14 },
+];
+
+type TaskDraft = Omit<Task, 'id' | 'createdAt' | 'completedAt'>;
+
+interface TaskModalProps {
   visible: boolean;
+  /** When set, the modal edits this task instead of creating a new one. */
+  task: Task | null;
   onClose: () => void;
-  onAdd: (task: Omit<Task, 'id' | 'createdAt' | 'completedAt'>) => void;
+  onSave: (task: TaskDraft) => void;
 }
 
-function AddTaskModal({ visible, onClose, onAdd }: AddTaskModalProps) {
+function TaskModal({ visible, task, onClose, onSave }: TaskModalProps) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<TaskPriority>('medium');
   const [category, setCategory] = useState('Work');
-  const [hasDueDate, setHasDueDate] = useState(false);
+  const [dueDate, setDueDate] = useState<number | null>(null);
 
-  const reset = () => {
-    setTitle('');
-    setDescription('');
-    setPriority('medium');
-    setCategory('Work');
-    setHasDueDate(false);
-  };
+  // Load the task being edited (or clear the form) each time the sheet opens
+  useEffect(() => {
+    if (!visible) return;
+    setTitle(task?.title ?? '');
+    setDescription(task?.description ?? '');
+    setPriority(task?.priority ?? 'medium');
+    setCategory(task?.category ?? 'Work');
+    setDueDate(task?.dueDate ?? null);
+  }, [visible, task]);
 
-  const handleAdd = () => {
+  const handleSave = () => {
     if (!title.trim()) {
       Alert.alert('Missing Title', 'Please enter a task title.');
       return;
     }
-    onAdd({
+    onSave({
       title: title.trim(),
       description: description.trim(),
       priority,
-      status: 'todo',
-      dueDate: hasDueDate ? Date.now() + 7 * 24 * 60 * 60 * 1000 : null,
+      status: task?.status ?? 'todo',
+      dueDate,
       category,
     });
-    reset();
     onClose();
   };
+
+  const isPresetActive = (days: number | null) =>
+    days === null ? dueDate === null : dueDate !== null && startOfDay(dueDate) === startOfDay(endOfDayIn(days));
+  const customDue = dueDate !== null && !DUE_PRESETS.some(p => isPresetActive(p.days));
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -88,9 +107,9 @@ function AddTaskModal({ visible, onClose, onAdd }: AddTaskModalProps) {
         style={styles.modalOverlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.modalSheet}>
+        <ScrollView style={styles.modalSheet} contentContainerStyle={styles.modalSheetContent} keyboardShouldPersistTaps="handled">
           <View style={styles.modalHandle} />
-          <Text style={styles.modalTitle}>New Task</Text>
+          <Text style={styles.modalTitle}>{task ? 'Edit Task' : 'New Task'}</Text>
 
           {/* Title */}
           <Text style={styles.label}>Title *</Text>
@@ -100,7 +119,7 @@ function AddTaskModal({ visible, onClose, onAdd }: AddTaskModalProps) {
             placeholderTextColor="#52525b"
             value={title}
             onChangeText={setTitle}
-            autoFocus
+            autoFocus={!task}
           />
 
           {/* Description */}
@@ -135,6 +154,28 @@ function AddTaskModal({ visible, onClose, onAdd }: AddTaskModalProps) {
             })}
           </View>
 
+          {/* Due date */}
+          <Text style={styles.label}>Due</Text>
+          <View style={styles.chipRow}>
+            {DUE_PRESETS.map(p => {
+              const active = isPresetActive(p.days);
+              return (
+                <TouchableOpacity
+                  key={p.label}
+                  style={[styles.chip, active && styles.chipActivePurple]}
+                  onPress={() => setDueDate(p.days === null ? null : endOfDayIn(p.days))}
+                >
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{p.label}</Text>
+                </TouchableOpacity>
+              );
+            })}
+            {customDue && (
+              <View style={[styles.chip, styles.chipActivePurple]}>
+                <Text style={[styles.chipText, styles.chipTextActive]}>{new Date(dueDate as number).toLocaleDateString()}</Text>
+              </View>
+            )}
+          </View>
+
           {/* Category */}
           <Text style={styles.label}>Category</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipScroll}>
@@ -156,14 +197,14 @@ function AddTaskModal({ visible, onClose, onAdd }: AddTaskModalProps) {
 
           {/* Actions */}
           <View style={styles.modalActions}>
-            <TouchableOpacity style={styles.btnCancel} onPress={() => { reset(); onClose(); }}>
+            <TouchableOpacity style={styles.btnCancel} onPress={onClose}>
               <Text style={styles.btnCancelText}>Cancel</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.btnAdd} onPress={handleAdd}>
-              <Text style={styles.btnAddText}>Add Task</Text>
+            <TouchableOpacity style={styles.btnAdd} onPress={handleSave}>
+              <Text style={styles.btnAddText}>{task ? 'Save' : 'Add Task'}</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -172,20 +213,22 @@ function AddTaskModal({ visible, onClose, onAdd }: AddTaskModalProps) {
 interface TaskCardProps {
   task: Task;
   onCycleStatus: () => void;
+  onEdit: () => void;
   onDelete: () => void;
 }
 
-function TaskCard({ task, onCycleStatus, onDelete }: TaskCardProps) {
+function TaskCard({ task, onCycleStatus, onEdit, onDelete }: TaskCardProps) {
   const pc = PRIORITY_CONFIG[task.priority];
   const sc = STATUS_CONFIG[task.status];
+  const overdue = isOverdue(task);
 
   return (
-    <View style={[styles.taskCard, task.status === 'done' && styles.taskCardDone]}>
-      <TouchableOpacity style={styles.taskStatusBtn} onPress={onCycleStatus}>
+    <View style={[styles.taskCard, task.status === 'done' && styles.taskCardDone, overdue && styles.taskCardOverdue]}>
+      <TouchableOpacity style={styles.taskStatusBtn} onPress={onCycleStatus} hitSlop={8}>
         <Text style={styles.taskStatusEmoji}>{sc.emoji}</Text>
       </TouchableOpacity>
 
-      <View style={styles.taskBody}>
+      <TouchableOpacity style={styles.taskBody} onPress={onEdit} activeOpacity={0.7}>
         <Text style={[styles.taskTitle, task.status === 'done' && styles.taskTitleDone]}>
           {task.title}
         </Text>
@@ -197,13 +240,18 @@ function TaskCard({ task, onCycleStatus, onDelete }: TaskCardProps) {
             <Text style={[styles.priorityBadgeText, { color: pc.color }]}>{pc.label}</Text>
           </View>
           <Text style={styles.taskCategory}>{task.category}</Text>
-          {task.dueDate && (
-            <Text style={styles.taskDue}>📅 {new Date(task.dueDate).toLocaleDateString()}</Text>
+          {task.dueDate !== null && (
+            <Text style={[styles.taskDue, overdue && styles.taskDueOverdue]}>
+              📅 {task.status === 'done' ? new Date(task.dueDate).toLocaleDateString() : dueLabel(task.dueDate)}
+            </Text>
+          )}
+          {task.status === 'done' && task.completedAt !== null && (
+            <Text style={styles.taskDue}>✓ {new Date(task.completedAt).toLocaleDateString()}</Text>
           )}
         </View>
-      </View>
+      </TouchableOpacity>
 
-      <TouchableOpacity style={styles.taskDeleteBtn} onPress={onDelete}>
+      <TouchableOpacity style={styles.taskDeleteBtn} onPress={onDelete} hitSlop={8}>
         <Text style={styles.taskDeleteIcon}>✕</Text>
       </TouchableOpacity>
     </View>
@@ -219,8 +267,20 @@ export default function TaskTrackerScreen({
 }: TaskTrackerScreenProps) {
   const [filterStatus, setFilterStatus] = useState<TaskStatus | 'all'>('all');
   const [showModal, setShowModal] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
 
-  const filtered = tasks.filter(t => filterStatus === 'all' || t.status === filterStatus);
+  const filtered = useMemo(
+    () => sortTasks(tasks.filter(t => filterStatus === 'all' || t.status === filterStatus)),
+    [tasks, filterStatus],
+  );
+
+  const openNew = () => { setEditingTask(null); setShowModal(true); };
+  const openEdit = (task: Task) => { setEditingTask(task); setShowModal(true); };
+
+  const handleSave = (draft: TaskDraft) => {
+    if (editingTask) onUpdateTask(editingTask.id, draft);
+    else onAddTask(draft);
+  };
 
   const cycleStatus = (task: Task) => {
     const next: Record<TaskStatus, TaskStatus> = {
@@ -235,7 +295,8 @@ export default function TaskTrackerScreen({
   };
 
   const handleDelete = (id: string) => {
-    Alert.alert('Delete Task', 'Remove this task?', [
+    const title = tasks.find(t => t.id === id)?.title;
+    Alert.alert('Delete Task', title ? `Remove "${title}"?` : 'Remove this task?', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => onDeleteTask(id) },
     ]);
@@ -244,6 +305,16 @@ export default function TaskTrackerScreen({
   const doneCount = tasks.filter(t => t.status === 'done').length;
   const inProgressCount = tasks.filter(t => t.status === 'in_progress').length;
   const todoCount = tasks.filter(t => t.status === 'todo').length;
+  const overdueCount = tasks.filter(t => isOverdue(t)).length;
+  const completedDone = tasks.filter(t => t.status === 'done');
+
+  const clearDone = () => {
+    const n = completedDone.length;
+    Alert.alert('Clear Completed', `Remove ${n} completed task${n === 1 ? '' : 's'}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Clear', style: 'destructive', onPress: () => completedDone.forEach(t => onDeleteTask(t.id)) },
+    ]);
+  };
 
   return (
     <View style={styles.container}>
@@ -256,7 +327,7 @@ export default function TaskTrackerScreen({
           <Text style={styles.headerSub}>Essential Tracker</Text>
           <Text style={styles.headerTitle}>Task Tracker</Text>
         </View>
-        <TouchableOpacity style={styles.addBtn} onPress={() => setShowModal(true)}>
+        <TouchableOpacity style={styles.addBtn} onPress={openNew}>
           <Text style={styles.addBtnText}>+ Add</Text>
         </TouchableOpacity>
       </View>
@@ -277,6 +348,14 @@ export default function TaskTrackerScreen({
         </View>
       </View>
 
+      {overdueCount > 0 && (
+        <TouchableOpacity style={styles.overdueBanner} onPress={() => setFilterStatus('all')}>
+          <Text style={styles.overdueBannerText}>
+            ⏰ {overdueCount} task{overdueCount === 1 ? ' is' : 's are'} overdue
+          </Text>
+        </TouchableOpacity>
+      )}
+
       {/* Filter Tabs */}
       <ScrollView
         horizontal
@@ -295,6 +374,11 @@ export default function TaskTrackerScreen({
             </Text>
           </TouchableOpacity>
         ))}
+        {filterStatus === 'done' && completedDone.length > 0 && (
+          <TouchableOpacity style={styles.clearDoneBtn} onPress={clearDone}>
+            <Text style={styles.clearDoneText}>Clear all</Text>
+          </TouchableOpacity>
+        )}
       </ScrollView>
 
       {/* Task List */}
@@ -310,7 +394,7 @@ export default function TaskTrackerScreen({
               {filterStatus === 'all' ? 'No tasks yet' : `No ${STATUS_CONFIG[filterStatus as TaskStatus]?.label ?? ''} tasks`}
             </Text>
             <Text style={styles.emptySubtitle}>
-              Tap "+ Add" to create your first task
+              {tasks.length === 0 ? 'Tap "+ Add" to create your first task' : 'Nothing here — try another filter'}
             </Text>
           </View>
         ) : (
@@ -319,16 +403,18 @@ export default function TaskTrackerScreen({
               key={task.id}
               task={task}
               onCycleStatus={() => cycleStatus(task)}
+              onEdit={() => openEdit(task)}
               onDelete={() => handleDelete(task.id)}
             />
           ))
         )}
       </ScrollView>
 
-      <AddTaskModal
+      <TaskModal
         visible={showModal}
+        task={editingTask}
         onClose={() => setShowModal(false)}
-        onAdd={onAddTask}
+        onSave={handleSave}
       />
     </View>
   );
@@ -442,6 +528,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   taskCardDone: { opacity: 0.6 },
+  taskCardOverdue: { borderColor: '#f43f5e66' },
   taskStatusBtn: { paddingTop: 2 },
   taskStatusEmoji: { fontSize: 22 },
   taskBody: { flex: 1 },
@@ -453,6 +540,21 @@ const styles = StyleSheet.create({
   priorityBadgeText: { fontSize: 10, fontWeight: '700' },
   taskCategory: { color: '#52525b', fontSize: 11 },
   taskDue: { color: '#71717a', fontSize: 11 },
+  taskDueOverdue: { color: '#f43f5e', fontWeight: '700' },
+
+  // Overdue banner / clear done
+  overdueBanner: {
+    marginHorizontal: 16,
+    marginBottom: 10,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: '#f43f5e15',
+    borderWidth: 1,
+    borderColor: '#f43f5e40',
+  },
+  overdueBannerText: { color: '#fda4af', fontSize: 12, fontWeight: '700', textAlign: 'center' },
+  clearDoneBtn: { paddingHorizontal: 12, paddingVertical: 7 },
+  clearDoneText: { color: '#f43f5e', fontSize: 12, fontWeight: '700' },
   taskDeleteBtn: { padding: 4 },
   taskDeleteIcon: { color: '#3f3f46', fontSize: 14, fontWeight: '700' },
 
@@ -466,11 +568,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#111114',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    padding: 24,
-    paddingBottom: 36,
+    maxHeight: '90%',
     borderTopWidth: 1,
     borderColor: '#27272a',
   },
+  modalSheetContent: { padding: 24, paddingBottom: 36 },
   modalHandle: {
     width: 40,
     height: 4,

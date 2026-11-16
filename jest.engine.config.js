@@ -4,6 +4,6 @@
  */
 module.exports = {
   testEnvironment: 'node',
-  testMatch: ['<rootDir>/__tests__/smsEngine.test.ts'],
+  testMatch: ['<rootDir>/__tests__/smsEngine.test.ts', '<rootDir>/__tests__/trackers.test.ts'],
   transform: { '\\.[jt]sx?$': 'babel-jest' },
 };

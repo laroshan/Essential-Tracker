@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   StatusBar, 
   StyleSheet, 
@@ -21,6 +21,7 @@ import {
 import { storage } from './src/utils/storage';
 import { ingestSms, learnKey, reanalyzeTransactions, reconcileTransactions, recategorize } from './src/utils/sms';
 import { totals } from './src/utils/finance';
+import { isOverdue, makeId, moodStreak as computeMoodStreak } from './src/utils/trackers';
 import SmsModule from './modules/sms-module/src/SmsModule';
 
 // Import existing Money Tracker Tabs
@@ -71,6 +72,24 @@ const DEFAULT_TODO_LISTS: Omit<TodoList, 'id' | 'createdAt'>[] = [
   { name: 'Shopping', color: '#f59e0b' },
 ];
 
+/**
+ * State that is mirrored to storage. Updates are applied to a ref first, so
+ * several quick actions in a row (or an action fired from a stale closure)
+ * always build on the latest value instead of overwriting each other.
+ */
+function useStored<T>(key: string, initial: T) {
+  const [value, setValue] = useState<T>(initial);
+  const ref = useRef(value);
+  const update = useCallback(async (fn: (prev: T) => T) => {
+    const next = fn(ref.current);
+    ref.current = next;
+    setValue(next);
+    await storage.setObject(key, next);
+  }, [key]);
+  const load = useCallback((v: T) => { ref.current = v; setValue(v); }, []);
+  return [value, update, load] as const;
+}
+
 // ─── Root ────────────────────────────────────────────────────────────────────
 
 function App() {
@@ -95,9 +114,9 @@ function AppContent() {
   // ── Money Tracker State ──────────────────────────────────────────────────
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [debts, setDebts] = useState<Debt[]>([]);
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
-  const [config, setConfig] = useState<WealthConfig>(INITIAL_CONFIG);
+  const [debts, updateDebts, loadDebts] = useStored<Debt[]>('debts', []);
+  const [subscriptions, updateSubscriptions, loadSubscriptions] = useStored<Subscription[]>('subscriptions', []);
+  const [config, updateConfigState, loadConfig] = useStored<WealthConfig>('wealthConfig', INITIAL_CONFIG);
 
   // SMS Sync States
   const [pendingSms, setPendingSms] = useState<Array<{ address: string; body: string; date: number; parsed: any }>>([]);
@@ -110,15 +129,15 @@ function AppContent() {
   const [learnedCategories, setLearnedCategories] = useState<Record<string, string>>({});
 
   // ── Task Tracker State ───────────────────────────────────────────────────
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [tasks, updateTasks, loadTasks] = useStored<Task[]>('tasks', []);
 
   // ── To-Do State ─────────────────────────────────────────────────────────
-  const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
-  const [todoLists, setTodoLists] = useState<TodoList[]>([]);
+  const [todoItems, updateTodoItems, loadTodoItems] = useStored<TodoItem[]>('todoItems', []);
+  const [todoLists, updateTodoLists, loadTodoLists] = useStored<TodoList[]>('todoLists', []);
 
   // ── Mental Health State ──────────────────────────────────────────────────
-  const [moodEntries, setMoodEntries] = useState<MoodEntry[]>([]);
-  const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const [moodEntries, updateMoodEntries, loadMoodEntries] = useStored<MoodEntry[]>('moodEntries', []);
+  const [journalEntries, updateJournalEntries, loadJournalEntries] = useStored<JournalEntry[]>('journalEntries', []);
 
   const unapprovedTransactions = useMemo(() => {
     const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -182,13 +201,13 @@ function AppContent() {
         setMessages(storedMsgs ?? INITIAL_MESSAGES);
         if (!storedMsgs) await storage.setObject('messages', INITIAL_MESSAGES);
 
-        setDebts(storedDebts ?? INITIAL_DEBTS);
+        loadDebts(storedDebts ?? INITIAL_DEBTS);
         if (!storedDebts) await storage.setObject('debts', INITIAL_DEBTS);
 
-        setSubscriptions(storedSubs ?? INITIAL_SUBSCRIPTIONS);
+        loadSubscriptions(storedSubs ?? INITIAL_SUBSCRIPTIONS);
         if (!storedSubs) await storage.setObject('subscriptions', INITIAL_SUBSCRIPTIONS);
 
-        setConfig(storedConfig ?? INITIAL_CONFIG);
+        loadConfig({ ...INITIAL_CONFIG, ...(storedConfig ?? {}) });
         if (!storedConfig) await storage.setObject('wealthConfig', INITIAL_CONFIG);
 
         // Only real Sri Lankan bank senders as defaults
@@ -213,28 +232,28 @@ function AppContent() {
         if (storedLearned) setLearnedCategories(storedLearned);
 
         // Apply task tracker data
-        setTasks(storedTasks ?? []);
+        loadTasks(storedTasks ?? []);
         if (!storedTasks) await storage.setObject('tasks', []);
 
         // Apply to-do data — seed default lists if none
         if (storedTodoLists && storedTodoLists.length > 0) {
-          setTodoLists(storedTodoLists);
+          loadTodoLists(storedTodoLists);
         } else {
           const seededLists: TodoList[] = DEFAULT_TODO_LISTS.map((l, i) => ({
             ...l,
             id: `list-${Date.now()}-${i}`,
             createdAt: Date.now(),
           }));
-          setTodoLists(seededLists);
+          loadTodoLists(seededLists);
           await storage.setObject('todoLists', seededLists);
         }
-        setTodoItems(storedTodoItems ?? []);
+        loadTodoItems(storedTodoItems ?? []);
         if (!storedTodoItems) await storage.setObject('todoItems', []);
 
         // Apply mental health data
-        setMoodEntries(storedMoodEntries ?? []);
+        loadMoodEntries(storedMoodEntries ?? []);
         if (!storedMoodEntries) await storage.setObject('moodEntries', []);
-        setJournalEntries(storedJournalEntries ?? []);
+        loadJournalEntries(storedJournalEntries ?? []);
         if (!storedJournalEntries) await storage.setObject('journalEntries', []);
 
       } catch (err) {
@@ -244,7 +263,8 @@ function AppContent() {
       }
     }
     loadData();
-  }, []);
+    // The load* setters are stable (useCallback with no deps), so this still runs once
+  }, [loadConfig, loadDebts, loadJournalEntries, loadMoodEntries, loadSubscriptions, loadTasks, loadTodoItems, loadTodoLists]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // MONEY TRACKER ACTIONS
@@ -319,35 +339,27 @@ function AppContent() {
   };
 
   const updateConfig = async (newConfig: Partial<WealthConfig>) => {
-    const updated = { ...config, ...newConfig };
-    setConfig(updated);
-    await storage.setObject('wealthConfig', updated);
+    await updateConfigState(prev => ({ ...prev, ...newConfig }));
   };
 
   const addDebt = async (debt: Omit<Debt, 'id'>) => {
-    const newDebt: Debt = { ...debt, id: `debt-${Date.now()}` };
-    const updated = [...debts, newDebt];
-    setDebts(updated);
-    await storage.setObject('debts', updated);
+    await updateDebts(prev => [...prev, { ...debt, id: makeId('debt') }]);
+  };
+
+  const updateDebt = async (id: string, updates: Partial<Debt>) => {
+    await updateDebts(prev => prev.map(d => d.id === id ? { ...d, ...updates } : d));
   };
 
   const deleteDebt = async (id: string) => {
-    const updated = debts.filter(d => d.id !== id);
-    setDebts(updated);
-    await storage.setObject('debts', updated);
+    await updateDebts(prev => prev.filter(d => d.id !== id));
   };
 
   const addSubscription = async (sub: Omit<Subscription, 'id'>) => {
-    const newSub: Subscription = { ...sub, id: `sub-${Date.now()}` };
-    const updated = [...subscriptions, newSub];
-    setSubscriptions(updated);
-    await storage.setObject('subscriptions', updated);
+    await updateSubscriptions(prev => [...prev, { ...sub, id: makeId('sub') }]);
   };
 
   const deleteSubscription = async (id: string) => {
-    const updated = subscriptions.filter(s => s.id !== id);
-    setSubscriptions(updated);
-    await storage.setObject('subscriptions', updated);
+    await updateSubscriptions(prev => prev.filter(s => s.id !== id));
   };
 
   const addSender = async (sender: string) => {
@@ -651,27 +663,16 @@ function AppContent() {
   // ─────────────────────────────────────────────────────────────────────────
 
   const addTask = async (taskData: Omit<Task, 'id' | 'createdAt' | 'completedAt'>) => {
-    const newTask: Task = {
-      ...taskData,
-      id: `task-${Date.now()}`,
-      createdAt: Date.now(),
-      completedAt: null,
-    };
-    const updated = [newTask, ...tasks];
-    setTasks(updated);
-    await storage.setObject('tasks', updated);
+    const newTask: Task = { ...taskData, id: makeId('task'), createdAt: Date.now(), completedAt: null };
+    await updateTasks(prev => [newTask, ...prev]);
   };
 
   const updateTask = async (id: string, updates: Partial<Task>) => {
-    const updated = tasks.map(t => t.id === id ? { ...t, ...updates } : t);
-    setTasks(updated);
-    await storage.setObject('tasks', updated);
+    await updateTasks(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
   };
 
   const deleteTask = async (id: string) => {
-    const updated = tasks.filter(t => t.id !== id);
-    setTasks(updated);
-    await storage.setObject('tasks', updated);
+    await updateTasks(prev => prev.filter(t => t.id !== id));
   };
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -679,51 +680,37 @@ function AppContent() {
   // ─────────────────────────────────────────────────────────────────────────
 
   const addTodoItem = async (itemData: Omit<TodoItem, 'id' | 'createdAt' | 'completedAt'>) => {
-    const newItem: TodoItem = {
-      ...itemData,
-      id: `todo-${Date.now()}`,
-      createdAt: Date.now(),
-      completedAt: null,
-    };
-    const updated = [...todoItems, newItem];
-    setTodoItems(updated);
-    await storage.setObject('todoItems', updated);
+    const newItem: TodoItem = { ...itemData, id: makeId('todo'), createdAt: Date.now(), completedAt: null };
+    await updateTodoItems(prev => [...prev, newItem]);
   };
 
   const toggleTodoItem = async (id: string) => {
-    const updated = todoItems.map(i =>
-      i.id === id
-        ? { ...i, completed: !i.completed, completedAt: !i.completed ? Date.now() : null }
-        : i
-    );
-    setTodoItems(updated);
-    await storage.setObject('todoItems', updated);
+    await updateTodoItems(prev => prev.map(i =>
+      i.id === id ? { ...i, completed: !i.completed, completedAt: !i.completed ? Date.now() : null } : i));
+  };
+
+  const editTodoItem = async (id: string, text: string) => {
+    await updateTodoItems(prev => prev.map(i => i.id === id ? { ...i, text } : i));
   };
 
   const deleteTodoItem = async (id: string) => {
-    const updated = todoItems.filter(i => i.id !== id);
-    setTodoItems(updated);
-    await storage.setObject('todoItems', updated);
+    await updateTodoItems(prev => prev.filter(i => i.id !== id));
   };
 
-  const addTodoList = async (listData: Omit<TodoList, 'id' | 'createdAt'>) => {
-    const newList: TodoList = {
-      ...listData,
-      id: `list-${Date.now()}`,
-      createdAt: Date.now(),
-    };
-    const updated = [...todoLists, newList];
-    setTodoLists(updated);
-    await storage.setObject('todoLists', updated);
+  const clearCompletedTodos = async (listId: string) => {
+    await updateTodoItems(prev => prev.filter(i => !(i.listId === listId && i.completed)));
+  };
+
+  /** Returns the new list's id so the screen can switch to it. */
+  const addTodoList = (listData: Omit<TodoList, 'id' | 'createdAt'>): string => {
+    const newList: TodoList = { ...listData, id: makeId('list'), createdAt: Date.now() };
+    updateTodoLists(prev => [...prev, newList]);
+    return newList.id;
   };
 
   const deleteTodoList = async (id: string) => {
-    const updatedLists = todoLists.filter(l => l.id !== id);
-    const updatedItems = todoItems.filter(i => i.listId !== id);
-    setTodoLists(updatedLists);
-    setTodoItems(updatedItems);
-    await storage.setObject('todoLists', updatedLists);
-    await storage.setObject('todoItems', updatedItems);
+    await updateTodoLists(prev => prev.filter(l => l.id !== id));
+    await updateTodoItems(prev => prev.filter(i => i.listId !== id));
   };
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -731,33 +718,23 @@ function AppContent() {
   // ─────────────────────────────────────────────────────────────────────────
 
   const addMoodEntry = async (entryData: Omit<MoodEntry, 'id'>) => {
-    const newEntry: MoodEntry = { ...entryData, id: `mood-${Date.now()}` };
-    const updated = [newEntry, ...moodEntries];
-    setMoodEntries(updated);
-    await storage.setObject('moodEntries', updated);
+    await updateMoodEntries(prev => [{ ...entryData, id: makeId('mood') }, ...prev]);
   };
 
   const deleteMoodEntry = async (id: string) => {
-    const updated = moodEntries.filter(e => e.id !== id);
-    setMoodEntries(updated);
-    await storage.setObject('moodEntries', updated);
+    await updateMoodEntries(prev => prev.filter(e => e.id !== id));
   };
 
   const addJournalEntry = async (entryData: Omit<JournalEntry, 'id' | 'createdAt'>) => {
-    const newEntry: JournalEntry = {
-      ...entryData,
-      id: `journal-${Date.now()}`,
-      createdAt: Date.now(),
-    };
-    const updated = [newEntry, ...journalEntries];
-    setJournalEntries(updated);
-    await storage.setObject('journalEntries', updated);
+    await updateJournalEntries(prev => [{ ...entryData, id: makeId('journal'), createdAt: Date.now() }, ...prev]);
+  };
+
+  const updateJournalEntry = async (id: string, updates: Partial<JournalEntry>) => {
+    await updateJournalEntries(prev => prev.map(e => e.id === id ? { ...e, ...updates } : e));
   };
 
   const deleteJournalEntry = async (id: string) => {
-    const updated = journalEntries.filter(e => e.id !== id);
-    setJournalEntries(updated);
-    await storage.setObject('journalEntries', updated);
+    await updateJournalEntries(prev => prev.filter(e => e.id !== id));
   };
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -771,20 +748,9 @@ function AppContent() {
   });
   const thisMonthSpent = totals(thisMonthTxns).expenses;
 
-  const latestMood = [...moodEntries].sort((a, b) => b.date - a.date)[0];
-
-  const moodStreak = (() => {
-    let count = 0;
-    const d = new Date();
-    while (true) {
-      d.setHours(0, 0, 0, 0);
-      const hasEntry = moodEntries.some(e => new Date(e.date).toDateString() === d.toDateString());
-      if (!hasEntry) break;
-      count++;
-      d.setDate(d.getDate() - 1);
-    }
-    return count;
-  })();
+  const latestMood = moodEntries.reduce<MoodEntry | undefined>((best, e) => (!best || e.date > best.date ? e : best), undefined);
+  const moodStreak = computeMoodStreak(moodEntries);
+  const overdueTasks = tasks.filter(t => isOverdue(t)).length;
 
   // ─────────────────────────────────────────────────────────────────────────
   // RENDER
@@ -806,7 +772,7 @@ function AppContent() {
         <HomeScreen
           onNavigate={screen => setActiveScreen(screen)}
           moneyStats={{ transactions: transactions.length, thisMonthSpent }}
-          taskStats={{ total: tasks.length, done: tasks.filter(t => t.status === 'done').length }}
+          taskStats={{ total: tasks.length, done: tasks.filter(t => t.status === 'done').length, overdue: overdueTasks }}
           todoStats={{ total: todoItems.length, completed: todoItems.filter(i => i.completed).length }}
           moodStats={{ streak: moodStreak, lastMood: latestMood?.mood ?? null }}
         />
@@ -838,7 +804,9 @@ function AppContent() {
           todoLists={todoLists}
           onAddItem={addTodoItem}
           onToggleItem={toggleTodoItem}
+          onEditItem={editTodoItem}
           onDeleteItem={deleteTodoItem}
+          onClearCompleted={clearCompletedTodos}
           onAddList={addTodoList}
           onDeleteList={deleteTodoList}
           onGoHome={() => setActiveScreen('home')}
@@ -856,6 +824,7 @@ function AppContent() {
           journalEntries={journalEntries}
           onAddMood={addMoodEntry}
           onAddJournal={addJournalEntry}
+          onUpdateJournal={updateJournalEntry}
           onDeleteMood={deleteMoodEntry}
           onDeleteJournal={deleteJournalEntry}
           onGoHome={() => setActiveScreen('home')}
@@ -918,10 +887,12 @@ function AppContent() {
         {activeTab === 'wealth' && (
           <WealthTab
             config={config}
+            transactions={transactions}
             debts={debts}
             subscriptions={subscriptions}
             onUpdateConfig={updateConfig}
             onAddDebt={addDebt}
+            onUpdateDebt={updateDebt}
             onDeleteDebt={deleteDebt}
             onAddSubscription={addSubscription}
             onDeleteSubscription={deleteSubscription}
